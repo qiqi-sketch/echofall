@@ -1051,9 +1051,9 @@ public class HudView extends View {
             String label;
             boolean on = false;
             switch (i) {
-                case CH_ESP: label = "ESP 透视（穿墙显示敌人）"; on = s.cheatEsp; break;
-                case CH_TRACK: label = "子弹追踪（自动命中最近敌人）"; on = s.cheatTrack; break;
-                case CH_LOCK: label = "枪锁（自动瞄准 + 自动开火）"; on = s.cheatLock; break;
+                case CH_ESP: label = "ESP 透视（穿墙）"; on = s.cheatEsp; break;
+                case CH_TRACK: label = "子弹追踪"; on = s.cheatTrack; break;
+                case CH_LOCK: label = "枪锁（自动开火）"; on = s.cheatLock; break;
                 case CH_JUMP: label = "自动连跳"; on = s.cheatAutoJump; break;
                 case CH_RECOIL: label = "无后坐力"; on = s.cheatNoRecoil; break;
                 case CH_AMMO: label = "无限弹药"; on = s.cheatInfAmmo; break;
