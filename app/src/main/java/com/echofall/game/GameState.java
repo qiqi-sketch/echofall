@@ -17,22 +17,37 @@ public class GameState {
     public static final float DEFUSE_TIME = 5f;
     private static final float ROUND_END_PAUSE = 5f;
 
-    private static final float[][] T_SPAWNS = {
-            {20.5f, 35.5f}, {18.5f, 34.5f}, {22.5f, 34.5f}, {19.5f, 32.5f}
+    // 96x96 地图上的出生点（T 在南边，CT 在北边，相距 80 米）
+    public static final float[][] T_SPAWNS = {
+            {48.5f, 88.5f}, {42.5f, 87.5f}, {54.5f, 87.5f}, {48.5f, 82.5f}
     };
-    private static final float[][] CT_SPAWNS = {
-            {20.5f, 4.5f}, {18.5f, 6.5f}, {22.5f, 6.5f}, {19.5f, 7.5f}
+    public static final float[][] CT_SPAWNS = {
+            {48.5f, 6.5f}, {42.5f, 7.5f}, {54.5f, 7.5f}, {48.5f, 12.5f}
     };
+
+    /** 地上掉落的枪 */
+    public static class Drop {
+        public final float x, z;
+        public final WeaponType w;
+
+        Drop(float x, float z, WeaponType w) {
+            this.x = x;
+            this.z = z;
+            this.w = w;
+        }
+    }
 
     public final MapGrid map = new MapGrid();
     public final Player player = new Player();
     public final Input input = new Input();
     public final ArrayList<Bot> bots = new ArrayList<>();
     public final ArrayList<Tracer> tracers = new ArrayList<>();
+    public final ArrayList<Drop> drops = new ArrayList<>();
 
     private final Random rnd = new Random();
 
     public int mode = MODE_TRAINING;
+    public int bombSite = 0; // 0=A 1=B
 
     public float time = 0f;
     public String toast = "";
@@ -96,6 +111,10 @@ public class GameState {
             player.mag[w.ordinal()] = w.magSize;
             player.reserve[w.ordinal()] = w.reserveSize;
         }
+        for (Bot b : bots) {
+            b.money = 4200;
+            b.weapon = WeaponType.PISTOL;
+        }
         startRound();
     }
 
@@ -115,6 +134,9 @@ public class GameState {
         player.fireCd = 0f;
         player.knifeT = 0f;
         player.muzzleT = 0f;
+        player.planting = false;
+        player.defusing = false;
+        player.hasBomb = false;
         player.yaw = player.team == TEAM_T ? 0f : (float) Math.PI;
         player.pitch = 0f;
 
@@ -129,18 +151,23 @@ public class GameState {
         bombZ = 0f;
         plantProgress = 0f;
         defuseProgress = 0f;
+        bombSite = rnd.nextBoolean() ? 0 : 1;
         roundTime = ROUND_TIME;
         roundEndT = 0f;
         roundTitle = "";
         tracers.clear();
+        drops.clear();
 
         spawnBots();
+        assignBombCarrier();
+        for (Bot b : bots) botBuy(b);
+
         msg(mode == MODE_DEFUSE ? "回合 " + round + " 开始" : "训练场");
     }
 
     private void spawnBots() {
         int enemyTeam = 1 - player.team;
-        // 列表只在第一回合创建，之后复用对象，避免 UI 线程遍历时被并发修改
+        // 列表只在第一场创建，之后复用对象，避免 UI 线程遍历时被并发修改
         if (bots.isEmpty()) {
             for (int i = 0; i < 3; i++) bots.add(makeBot(player.team, i + 1));
             for (int i = 0; i < 4; i++) bots.add(makeBot(enemyTeam, i + 1));
@@ -157,16 +184,21 @@ public class GameState {
             b.hitFlash = 0f;
             b.planting = false;
             b.defusing = false;
+            b.animT = 0f;
+            b.hasBomb = false;
             b.path.clear();
             b.pathIndex = 0;
+            b.pickupX = -1f;
             b.yaw = team == TEAM_T ? 0f : (float) Math.PI;
             b.aimYaw = b.yaw;
-            b.shootT = 0.5f + rnd.nextFloat();
+            b.shootT = 0.6f + rnd.nextFloat();
             b.thinkT = rnd.nextFloat() * 0.5f;
             b.reactionT = 0.3f + rnd.nextFloat() * 0.4f;
             b.state = 0;
-            b.holdX = (i % 2 == 0) ? 31f : 8f;
-            b.holdZ = 12f;
+            boolean a = rnd.nextBoolean();
+            b.holdX = a ? MapGrid.A_CENTER_X : MapGrid.B_CENTER_X;
+            b.holdZ = a ? MapGrid.A_CENTER_Z : MapGrid.B_CENTER_Z;
+            if (b.weapon == null) b.weapon = WeaponType.PISTOL;
         }
     }
 
@@ -179,6 +211,8 @@ public class GameState {
         b.hp = 100;
         b.alive = true;
         b.skill = 0.35f + rnd.nextFloat() * 0.5f;
+        b.money = 4200;
+        b.weapon = WeaponType.PISTOL;
         b.yaw = team == TEAM_T ? 0f : (float) Math.PI;
         b.aimYaw = b.yaw;
         b.shootT = 0.5f + rnd.nextFloat();
@@ -268,6 +302,13 @@ public class GameState {
         float dx = (cos * mx + sin * mz) * speed * dt;
         float dz = (sin * mx - cos * mz) * speed * dt;
 
+        boolean stationary = (Math.abs(mx) + Math.abs(mz)) < 0.12f;
+        if (player.planting || player.defusing) {
+            // 下包/拆包时不能走动
+            dx = 0f;
+            dz = 0f;
+        }
+
         if (!map.blocked(player.x + dx, player.z, 0.28f)) player.x += dx;
         if (!map.blocked(player.x, player.z + dz, 0.28f)) player.z += dz;
 
@@ -303,6 +344,8 @@ public class GameState {
             if (player.reloadT <= 0f) finishReload();
         }
 
+        tryPickup();
+
         // 全自动武器按住连发，单发武器需要每次按下
         boolean wantFire;
         if (player.current.auto || player.current == WeaponType.KNIFE) {
@@ -311,7 +354,21 @@ public class GameState {
             wantFire = input.firePressed;
         }
         input.firePressed = false;
-        if (wantFire) playerFire();
+        if (wantFire && !player.planting && !player.defusing) playerFire();
+
+        // 站着不动才能下包/拆包，由 updateBomb 判定
+        player.planting = false;
+        player.defusing = false;
+        if (mode == MODE_DEFUSE) {
+            if (player.team == TEAM_T && player.hasBomb && !bombPlanted
+                    && map.inAnySite(player.x, player.z) && stationary) {
+                player.planting = true;
+            }
+            if (player.team == TEAM_CT && bombPlanted && stationary
+                    && Math.hypot(player.x - bombX, player.z - bombZ) < 1.8f) {
+                player.defusing = true;
+            }
+        }
     }
 
     private void toggleAds() {
@@ -420,7 +477,11 @@ public class GameState {
             float y = oy + dy * t;
             float z = oz + dz * t;
             if (y <= 0.02f || y >= 3.0f) return t;
-            if (map.isWall((int) Math.floor(x), (int) Math.floor(z))) return t;
+            int cx = (int) Math.floor(x);
+            int cz = (int) Math.floor(z);
+            if (map.isWall(cx, cz)) return t;
+            // 矮掩体只有 1.2 米，低于掩体高度才挡子弹
+            if (map.kindAt(cx, cz) == MapGrid.COVER && y <= MapGrid.COVER_H) return t;
             t += 0.25f;
         }
         return maxT;
@@ -449,6 +510,34 @@ public class GameState {
         }
     }
 
+    // ---------------------------------------------------------------- 掉落物
+
+    private void dropWeapon(float x, float z, WeaponType w) {
+        if (w == null || w == WeaponType.KNIFE || w == WeaponType.PISTOL) return;
+        if (drops.size() > 16) drops.remove(0);
+        drops.add(new Drop(x, z, w));
+    }
+
+    private void tryPickup() {
+        for (int i = drops.size() - 1; i >= 0; i--) {
+            Drop d = drops.get(i);
+            if (Math.hypot(d.x - player.x, d.z - player.z) > 1.5f) continue;
+            WeaponType w = d.w;
+            boolean better = w.price > player.current.price + 150;
+            boolean needPrimary = w.primary && player.primary == null;
+            if (!better && !needPrimary) continue;
+            drops.remove(i);
+            if (w.primary) player.primary = w;
+            else player.secondary = w;
+            player.current = w;
+            player.mag[w.ordinal()] = w.magSize;
+            player.reserve[w.ordinal()] = Math.max(player.reserve[w.ordinal()], w.reserveSize);
+            player.switchT = 0.35f;
+            player.reloadT = 0f;
+            msg("拾取 " + w.label);
+        }
+    }
+
     // ---------------------------------------------------------------- 机器人
 
     private void updateBots(float dt) {
@@ -465,47 +554,157 @@ public class GameState {
             b.thinkT -= dt;
             b.shootT -= dt;
             b.strafeT -= dt;
+            b.scanT -= dt;
 
             boolean los = acquireTarget(b);
             b.planting = false;
             b.defusing = false;
 
-            if (los && b.targetDist < 26f) {
+            // ---- 下包 / 拆包 ----
+            boolean busy = false;
+            if (mode == MODE_DEFUSE) {
+                if (!bombPlanted && b.team == TEAM_T && b.hasBomb
+                        && map.inAnySite(b.x, b.z)) {
+                    b.planting = true;
+                    b.animT += dt;
+                    busy = true;
+                    float sx = map.inSiteA(b.x, b.z) ? MapGrid.A_CENTER_X : MapGrid.B_CENTER_X;
+                    float sz = map.inSiteA(b.x, b.z) ? MapGrid.A_CENTER_Z : MapGrid.B_CENTER_Z;
+                    b.aimYaw = turnToward(b.aimYaw,
+                            (float) Math.atan2(sx - b.x, -(sz - b.z)), 3f * dt);
+                } else if (bombPlanted && b.team == TEAM_CT
+                        && Math.hypot(b.x - bombX, b.z - bombZ) < 1.6f) {
+                    b.defusing = true;
+                    b.animT += dt;
+                    busy = true;
+                    b.aimYaw = turnToward(b.aimYaw,
+                            (float) Math.atan2(bombX - b.x, -(bombZ - b.z)), 3f * dt);
+                }
+            }
+            if (!busy) b.animT = 0f;
+
+            // 正在下包/拆包时不会还手，除非敌人已经贴脸
+            boolean panicked = busy && los && b.targetDist < 6f;
+
+            if (los && b.targetDist < 26f && !busy || los && b.targetDist < 6f) {
                 b.state = 2;
                 float want = (float) Math.atan2(b.targetX - b.x, -(b.targetZ - b.z));
                 b.aimYaw = turnToward(b.aimYaw, want, (3.0f + b.skill * 3.5f) * dt);
-                b.yaw = b.aimYaw;
+                if (!busy) b.yaw = b.aimYaw;
 
-                if (b.targetDist > 10f) {
-                    moveToward(b, b.targetX, b.targetZ, dt, 3.0f);
-                } else if (b.targetDist < 4.5f) {
-                    moveToward(b, b.x - (b.targetX - b.x), b.z - (b.targetZ - b.z), dt, 2.0f);
-                } else {
-                    strafe(b, dt);
+                if (!busy) {
+                    if (b.targetDist > 12f) {
+                        moveToward(b, b.targetX, b.targetZ, dt, 3.0f);
+                    } else if (b.targetDist < 4.5f) {
+                        moveToward(b, b.x - (b.targetX - b.x), b.z - (b.targetZ - b.z), dt, 2.0f);
+                    } else {
+                        strafe(b, dt);
+                    }
+                    if (b.reactionT <= 0f && b.shootT <= 0f) botShoot(b);
+                } else if (panicked) {
+                    b.planting = false;
+                    b.defusing = false;
+                    if (b.reactionT <= 0f && b.shootT <= 0f) botShoot(b);
                 }
-                if (b.reactionT <= 0f && b.shootT <= 0f) botShoot(b);
-            } else {
+            } else if (!busy) {
                 b.state = 1;
                 b.reactionT = Math.max(b.reactionT, 0.35f + (1f - b.skill) * 0.4f);
 
+                scanForWeapon(b);
                 float[] obj = objectiveFor(b);
                 if (b.thinkT <= 0f || b.pathIndex >= b.path.size()) {
                     List<float[]> p = map.findPath(b.x, b.z, obj[0], obj[1]);
                     b.path.clear();
                     b.path.addAll(p);
                     b.pathIndex = 0;
-                    b.thinkT = 0.9f + rnd.nextFloat() * 0.7f;
+                    b.thinkT = 1.0f + rnd.nextFloat() * 0.8f;
                 }
-                followPath(b, 2.9f * dt);
+                followPath(b, 3.0f * dt);
             }
         }
     }
 
     private float[] objectiveFor(Bot b) {
-        if (mode == MODE_DEFUSE && bombPlanted) {
-            return new float[]{bombX, bombZ};
+        if (mode == MODE_DEFUSE) {
+            if (bombPlanted) return new float[]{bombX, bombZ};
+            if (b.hasBomb) {
+                return bombSite == 0
+                        ? new float[]{MapGrid.A_CENTER_X, MapGrid.A_CENTER_Z}
+                        : new float[]{MapGrid.B_CENTER_X, MapGrid.B_CENTER_Z};
+            }
+            if (player.team == TEAM_T && player.hp > 0 && player.hasBomb) {
+                // 跟着拿包的玩家一起推进
+                return new float[]{player.x + (b.team == TEAM_T ? 2f : -2f), player.z + 1.5f};
+            }
+            if (b.team == TEAM_T) {
+                // 没拿包的土匪跟着包点推进，保持散开
+                float cx = bombSite == 0 ? MapGrid.A_CENTER_X : MapGrid.B_CENTER_X;
+                float cz = bombSite == 0 ? MapGrid.A_CENTER_Z : MapGrid.B_CENTER_Z;
+                float ang = (b.hashCode() % 628) / 100f;
+                return new float[]{cx + (float) Math.cos(ang) * 3.5f,
+                        cz + (float) Math.sin(ang) * 3.5f};
+            }
         }
+        // 人少的时候抱团行动
+        if (aliveCount(b.team) < 3) {
+            Bot leader = teamLeader(b.team, b);
+            if (leader != null) {
+                float ang = (b.hashCode() % 628) / 100f;
+                return new float[]{leader.x + (float) Math.cos(ang) * 2.0f,
+                        leader.z + (float) Math.sin(ang) * 2.0f};
+            }
+        }
+        // 想捡的枪优先
+        if (b.pickupX >= 0f) return new float[]{b.pickupX, b.pickupZ};
         return new float[]{b.holdX, b.holdZ};
+    }
+
+    private Bot teamLeader(int team, Bot self) {
+        for (Bot o : bots) {
+            if (o != self && o.alive && o.team == team) return o;
+        }
+        return null;
+    }
+
+    private void scanForWeapon(Bot b) {
+        if (b.scanT > 0f) return;
+        b.scanT = 0.9f + rnd.nextFloat() * 0.7f;
+        if (b.pickupX >= 0f) {
+            float d = (float) Math.hypot(b.pickupX - b.x, b.pickupZ - b.z);
+            if (d < 0.9f) {
+                pickupForBot(b);
+                return;
+            }
+            if (d > 14f) b.pickupX = -1f;
+        }
+        Drop best = null;
+        float bestScore = 0f;
+        for (Drop d : drops) {
+            float dist = (float) Math.hypot(d.x - b.x, d.z - b.z);
+            if (dist > 12f) continue;
+            if (d.w.price <= b.weapon.price + 200) continue;
+            float score = d.w.price - dist * 60f;
+            if (score > bestScore) {
+                bestScore = score;
+                best = d;
+            }
+        }
+        if (best != null) {
+            b.pickupX = best.x;
+            b.pickupZ = best.z;
+        }
+    }
+
+    private void pickupForBot(Bot b) {
+        for (int i = drops.size() - 1; i >= 0; i--) {
+            Drop d = drops.get(i);
+            if (Math.hypot(d.x - b.x, d.z - b.z) > 1.2f) continue;
+            if (d.w.price <= b.weapon.price) continue;
+            b.weapon = d.w;
+            drops.remove(i);
+            break;
+        }
+        b.pickupX = -1f;
     }
 
     private boolean acquireTarget(Bot b) {
@@ -513,11 +712,12 @@ public class GameState {
         boolean found = false;
         int bestBot = -1;
 
+        float viewLimit = Math.min(40f, b.weapon.range * 0.55f);
         for (int i = 0; i < bots.size(); i++) {
             Bot o = bots.get(i);
             if (!o.alive || o.team == b.team) continue;
             float d = (float) Math.hypot(o.x - b.x, o.z - b.z);
-            if (d < best && d < 28f && map.lineOfSight(b.x, b.z, o.x, o.z)) {
+            if (d < best && d < viewLimit && map.lineOfSight(b.x, b.z, o.x, o.z)) {
                 best = d;
                 found = true;
                 bestBot = i;
@@ -525,7 +725,7 @@ public class GameState {
         }
         if (player.hp > 0 && player.team != b.team) {
             float d = (float) Math.hypot(player.x - b.x, player.z - b.z);
-            if (d < best && d < 28f && map.lineOfSight(b.x, b.z, player.x, player.z)) {
+            if (d < best && d < viewLimit && map.lineOfSight(b.x, b.z, player.x, player.z)) {
                 best = d;
                 found = true;
                 bestBot = -1;
@@ -548,10 +748,17 @@ public class GameState {
     }
 
     private void botShoot(Bot b) {
-        b.shootT = 1.35f - b.skill * 0.6f + rnd.nextFloat() * 0.5f;
+        WeaponType w = b.weapon;
+        float rate = Math.max(w.interval, 0.11f);
+        b.shootT = rate * (1.75f - b.skill * 0.6f) + rnd.nextFloat() * 0.35f;
+
         float gunX = b.x + (float) Math.sin(b.yaw) * 0.35f;
         float gunZ = b.z - (float) Math.cos(b.yaw) * 0.35f;
-        float acc = Math.max(0.12f, 0.30f + b.skill * 0.55f - b.targetDist * 0.012f);
+
+        float rangeFactor = Math.min(1f, b.targetDist / Math.max(w.range, 1f));
+        float acc = Math.max(0.10f, 0.34f + b.skill * 0.48f - b.targetDist * 0.010f);
+        acc *= 1.05f - 0.45f * rangeFactor;
+        if (w.scoped) acc += 0.06f;
         boolean hit = rnd.nextFloat() < acc;
 
         float ex = b.targetX;
@@ -559,13 +766,15 @@ public class GameState {
         float ey = 1.15f;
 
         if (hit) {
-            boolean head = rnd.nextFloat() < 0.08f + b.skill * 0.12f;
+            boolean head = rnd.nextFloat() < 0.06f + b.skill * 0.11f;
+            int base = Math.round(w.damage * 0.60f * (0.8f + rnd.nextFloat() * 0.4f));
             if (b.targetIsPlayer) {
-                damagePlayer(head ? 26 + rnd.nextInt(18) : 9 + rnd.nextInt(10));
+                damagePlayer(head ? Math.round(base * 1.9f) : base);
             } else {
                 Bot o = botByIndex(b.targetBot);
                 if (o != null && o.alive) {
-                    damageBot(o, head ? 42 + rnd.nextInt(32) : 11 + rnd.nextInt(12), false);
+                    damageBot(o, head ? Math.round(base * 2.0f) : base, false);
+                    if (o.hp <= 0) b.money += 300;
                 }
             }
             ey = 1.35f;
@@ -588,7 +797,7 @@ public class GameState {
         }
         float perpX = (float) Math.cos(b.yaw) * b.strafeDir;
         float perpZ = (float) Math.sin(b.yaw) * b.strafeDir;
-        float step = 1.8f * dt;
+        float step = 1.9f * dt;
         if (!map.blocked(b.x + perpX * step, b.z, 0.3f)) b.x += perpX * step;
         if (!map.blocked(b.x, b.z + perpZ * step, 0.3f)) b.z += perpZ * step;
     }
@@ -649,9 +858,59 @@ public class GameState {
         b.hitFlash = 0f;
         b.path.clear();
         b.pathIndex = 0;
+        b.pickupX = -1f;
         b.shootT = 1f;
         b.reactionT = 0.4f;
         b.state = 0;
+        b.planting = false;
+        b.defusing = false;
+    }
+
+    /** 回合开始时给 AI 买枪 */
+    private void botBuy(Bot b) {
+        b.money = Math.min(b.money, 16000);
+        WeaponType want = null;
+        if (b.money >= WeaponType.AWP.price && rnd.nextFloat() < 0.18f) {
+            want = WeaponType.AWP;
+        } else if (b.money >= WeaponType.RIFLE.price) {
+            float r = rnd.nextFloat();
+            want = r < 0.55f ? WeaponType.RIFLE
+                    : (r < 0.80f ? WeaponType.SMG : WeaponType.SHOTGUN);
+        } else if (b.money >= WeaponType.SMG.price) {
+            want = rnd.nextBoolean() ? WeaponType.SMG : WeaponType.SHOTGUN;
+        } else if (b.money >= WeaponType.DEAGLE.price) {
+            want = WeaponType.DEAGLE;
+        }
+        if (want == null || want.price <= b.weapon.price) return;
+        b.money -= want.price;
+        b.weapon = want;
+    }
+
+    private void assignBombCarrier() {
+        for (Bot b : bots) b.hasBomb = false;
+        player.hasBomb = false;
+        if (player.team == TEAM_T) {
+            player.hasBomb = true;
+            return;
+        }
+        for (Bot b : bots) {
+            if (b.alive && b.team == TEAM_T) {
+                b.hasBomb = true;
+                return;
+            }
+        }
+    }
+
+    private void transferBomb(Bot dead) {
+        if (!dead.hasBomb) return;
+        dead.hasBomb = false;
+        for (Bot b : bots) {
+            if (b.alive && b.team == TEAM_T) {
+                b.hasBomb = true;
+                return;
+            }
+        }
+        if (player.team == TEAM_T && player.hp > 0) player.hasBomb = true;
     }
 
     // ---------------------------------------------------------------- 伤害
@@ -664,13 +923,23 @@ public class GameState {
             b.alive = false;
             b.path.clear();
             b.pathIndex = 0;
+            b.planting = false;
+            b.defusing = false;
+            dropWeapon(b.x, b.z, b.weapon);
+            transferBomb(b);
             if (mode == MODE_TRAINING) b.respawnT = 4f;
             if (byPlayer) {
                 player.money += 300;
                 player.kills++;
                 msg("击杀 +$300");
             }
+            if (mode == MODE_DEFUSE && !bombPlanted) updateRoundWinCheck();
         }
+    }
+
+    private void updateRoundWinCheck() {
+        if (roundEndT > 0f) return;
+        if (aliveCount(TEAM_T) == 0) endRound("T 被全部消灭", TEAM_CT);
     }
 
     private void damagePlayer(int dmg) {
@@ -686,6 +955,16 @@ public class GameState {
         if (player.hp <= 0) {
             player.hp = 0;
             player.deaths++;
+            dropWeapon(player.x, player.z, player.current);
+            if (player.hasBomb) {
+                player.hasBomb = false;
+                for (Bot b : bots) {
+                    if (b.alive && b.team == TEAM_T) {
+                        b.hasBomb = true;
+                        break;
+                    }
+                }
+            }
             if (mode == MODE_TRAINING) {
                 player.respawnT = 3f;
                 msg("你被击倒，3 秒后重生");
@@ -738,21 +1017,27 @@ public class GameState {
         if (mode != MODE_DEFUSE || roundEndT > 0f) return;
 
         if (!bombPlanted) {
-            boolean planter = false;
-            if (player.team == TEAM_T && player.hp > 0 && map.inAnySite(player.x, player.z)) {
-                planter = true;
-            }
+            boolean planter = player.planting;
+            Bot planterBot = null;
             for (Bot b : bots) {
-                if (b.team == TEAM_T && b.alive && map.inAnySite(b.x, b.z)) {
+                if (b.alive && b.planting) {
                     planter = true;
-                    b.planting = true;
+                    planterBot = b;
+                    break;
                 }
             }
             if (planter) {
                 plantProgress += dt;
+                if (planterBot != null) {
+                    bombX = planterBot.x;
+                    bombZ = planterBot.z;
+                } else {
+                    bombX = player.x;
+                    bombZ = player.z;
+                }
                 if (plantProgress >= PLANT_TIME) plantBomb();
             } else {
-                plantProgress = Math.max(0f, plantProgress - dt * 0.5f);
+                plantProgress = Math.max(0f, plantProgress - dt * 0.6f);
             }
             return;
         }
@@ -763,16 +1048,11 @@ public class GameState {
             return;
         }
 
-        boolean near = false;
-        if (player.team == TEAM_CT && player.hp > 0
-                && Math.hypot(player.x - bombX, player.z - bombZ) < 1.8f) {
-            near = true;
-        }
+        boolean near = player.defusing;
         for (Bot b : bots) {
-            if (b.team == TEAM_CT && b.alive
-                    && Math.hypot(b.x - bombX, b.z - bombZ) < 1.6f) {
+            if (b.alive && b.defusing) {
                 near = true;
-                b.defusing = true;
+                break;
             }
         }
         if (near) {
@@ -790,17 +1070,8 @@ public class GameState {
         bombTimer = BOMB_TIME;
         plantProgress = PLANT_TIME;
         defuseProgress = 0f;
-        bombX = player.x;
-        bombZ = player.z;
-        if (!(player.team == TEAM_T && player.hp > 0 && map.inAnySite(player.x, player.z))) {
-            for (Bot b : bots) {
-                if (b.team == TEAM_T && b.alive && map.inAnySite(b.x, b.z)) {
-                    bombX = b.x;
-                    bombZ = b.z;
-                    break;
-                }
-            }
-        }
+        player.hasBomb = false;
+        for (Bot b : bots) b.hasBomb = false;
         msg("炸弹已安放！");
     }
 
@@ -811,7 +1082,10 @@ public class GameState {
         if (winner == TEAM_CT) scoreCT++;
         else scoreT++;
         boolean playerWon = winner == player.team;
-        player.money += playerWon ? 3250 : 1400;
+        player.money = Math.min(16000, player.money + (playerWon ? 3250 : 1400));
+        for (Bot b : bots) {
+            b.money = Math.min(16000, b.money + (b.team == winner ? 3250 : 1400));
+        }
         msg(title);
     }
 

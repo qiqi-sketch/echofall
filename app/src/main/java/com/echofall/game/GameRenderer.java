@@ -65,10 +65,42 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             "  gl_FragColor = uColor;\n" +
             "}\n";
 
+    // 静态地形：把连续的格子合并成长条，大幅减少绘制调用
+    private float[] staticBoxes; // x, z, 长度, 类型
+    private int staticCount;
+
     public GameRenderer(GameState state) {
         s = state;
         last = System.nanoTime();
         cube = makeCube();
+        buildStaticBoxes();
+    }
+
+    private void buildStaticBoxes() {
+        float[] tmp = new float[MapGrid.W * MapGrid.H * 4];
+        boolean[][] done = new boolean[MapGrid.W][MapGrid.H];
+        int n = 0;
+        for (int x = 0; x < MapGrid.W; x++) {
+            for (int z = 0; z < MapGrid.H; z++) {
+                if (done[x][z]) continue;
+                byte k = s.map.kindAt(x, z);
+                if (k == MapGrid.FLOOR) continue;
+                int z2 = z;
+                while (z2 + 1 < MapGrid.H && !done[x][z2 + 1]
+                        && s.map.kindAt(x, z2 + 1) == k) {
+                    z2++;
+                }
+                for (int zz = z; zz <= z2; zz++) done[x][zz] = true;
+                int len = z2 - z + 1;
+                tmp[n++] = x + 0.5f;
+                tmp[n++] = z + len * 0.5f;
+                tmp[n++] = len;
+                tmp[n++] = k;
+            }
+        }
+        staticBoxes = new float[n];
+        System.arraycopy(tmp, 0, staticBoxes, 0, n);
+        staticCount = n / 4;
     }
 
     private FloatBuffer makeCube() {
@@ -207,7 +239,7 @@ public class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glEnable(GLES20.GL_BLEND);
         GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
 
-        Matrix.perspectiveM(proj, 0, s.fov(), aspect, 0.08f, 160f);
+        Matrix.perspectiveM(proj, 0, s.fov(), aspect, 0.08f, 220f);
 
         Player p = s.player;
         float cp = (float) Math.cos(p.pitch);
@@ -226,17 +258,45 @@ public class GameRenderer implements GLSurfaceView.Renderer {
         // A / B 点地面标记
         drawSiteMarkers();
 
-        // 墙体
-        for (int x = 0; x < MapGrid.W; x++) {
-            for (int z = 0; z < MapGrid.H; z++) {
-                if (!s.map.wall[x][z]) continue;
-                if ((x + z) % 2 == 0) {
-                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.44f, 0.45f, 0.48f, 1f);
-                } else {
-                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.37f, 0.38f, 0.41f, 1f);
-                }
+        // 墙体与矮掩体（合并后的长条 + 背面裁剪）
+        float fwdX = (float) Math.sin(p.yaw);
+        float fwdZ = (float) -Math.cos(p.yaw);
+        for (int i = 0; i < staticCount; i++) {
+            int o = i * 4;
+            float bx = staticBoxes[o];
+            float bz = staticBoxes[o + 1];
+            float len = staticBoxes[o + 2];
+            byte k = (byte) staticBoxes[o + 3];
+            float ddx = bx - p.x;
+            float ddz = bz - p.z;
+            float d = (float) Math.hypot(ddx, ddz);
+            float rad = len * 0.5f + 1.2f;
+            if (d - rad > 200f) continue;
+            if (d > rad && ddx * fwdX + ddz * fwdZ < -rad) continue;
+
+            if (k == MapGrid.WALL) {
+                float v = ((bx * 7f + bz * 13f) % 3f) * 0.018f;
+                box(view, bx, MapGrid.WALL_H * 0.5f, bz,
+                        1f, MapGrid.WALL_H, len,
+                        0.40f + v, 0.43f + v, 0.48f + v, 1f);
+            } else {
+                float v = ((bx * 11f + bz * 5f) % 3f) * 0.020f;
+                box(view, bx, MapGrid.COVER_H * 0.5f, bz,
+                        1f, MapGrid.COVER_H, len,
+                        0.44f + v, 0.33f + v, 0.22f + v, 1f);
             }
         }
+
+        // 地上的掉落枪
+        for (GameState.Drop d : s.drops) {
+            float spin = (float) Math.toDegrees(s.time * 1.6f + d.x + d.z);
+            float col = d.w == WeaponType.AWP ? 0.35f : 0.20f;
+            boxYaw(view, d.x, 0.14f, d.z, spin, 0.55f, 0.10f, 0.16f,
+                    0.55f + col, 0.55f, 0.34f, 1f);
+            boxYaw(view, d.x, 0.14f, d.z, spin, 0.18f, 0.16f, 0.30f,
+                    0.16f, 0.16f, 0.18f, 1f);
+        }
+
 
         // 炸弹
         if (s.bombPlanted) {
@@ -271,27 +331,52 @@ public class GameRenderer implements GLSurfaceView.Renderer {
 
     private void drawActor(Bot b) {
         float flash = b.hitFlash > 0f ? 0.45f : 0f;
+        float crouch = 0f;
+        if (b.planting || b.defusing) {
+            crouch = Math.min(1f, b.animT / 0.45f) * 0.32f;
+        }
+        float y0 = -crouch;
         if (b.team == GameState.TEAM_CT) {
             float r = 0.28f + flash;
             float g = 0.48f + flash;
             float bl = 0.86f + flash;
-            box(view, b.x, 0.42f, b.z, 0.55f, 0.84f, 0.40f, r * 0.55f, g * 0.55f, bl * 0.55f, 1f);
-            box(view, b.x, 1.10f, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
-            box(view, b.x, 1.62f, b.z, 0.30f, 0.30f, 0.30f, 0.86f, 0.72f, 0.62f, 1f);
-            box(view, b.x, 1.60f, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
+            box(view, b.x, 0.42f + y0, b.z, 0.55f, 0.84f, 0.40f, r * 0.55f, g * 0.55f, bl * 0.55f, 1f);
+            box(view, b.x, 1.10f + y0, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
+            box(view, b.x, 1.62f + y0, b.z, 0.30f, 0.30f, 0.30f, 0.86f, 0.72f, 0.62f, 1f);
+            box(view, b.x, 1.60f + y0, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
         } else {
             float r = 0.80f + flash;
             float g = 0.55f + flash;
             float bl = 0.22f + flash;
-            box(view, b.x, 0.42f, b.z, 0.55f, 0.84f, 0.40f, 0.30f, 0.26f, 0.20f, 1f);
-            box(view, b.x, 1.10f, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
-            box(view, b.x, 1.62f, b.z, 0.30f, 0.30f, 0.30f, 0.88f, 0.74f, 0.63f, 1f);
-            box(view, b.x, 1.60f, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
+            box(view, b.x, 0.42f + y0, b.z, 0.55f, 0.84f, 0.40f, 0.30f, 0.26f, 0.20f, 1f);
+            box(view, b.x, 1.10f + y0, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
+            box(view, b.x, 1.62f + y0, b.z, 0.30f, 0.30f, 0.30f, 0.88f, 0.74f, 0.63f, 1f);
+            box(view, b.x, 1.60f + y0, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
         }
-        // 枪
-        boxYaw(view, b.x + (float) Math.sin(b.aimYaw) * 0.36f, 1.16f,
-                b.z - (float) Math.cos(b.aimYaw) * 0.36f, b.aimYaw,
-                0.10f, 0.10f, 0.56f, 0.13f, 0.13f, 0.15f, 1f);
+
+        if (b.planting || b.defusing) {
+            // 蹲下并伸出双手操作炸弹
+            float wob = (float) Math.sin(b.animT * 9f) * 0.06f;
+            float hx = b.x + (float) Math.sin(b.aimYaw) * 0.42f;
+            float hz = b.z - (float) Math.cos(b.aimYaw) * 0.42f;
+            float hy = 0.42f + wob + (b.planting ? 0f : 0.1f);
+            float skin = 0.86f, skinG = 0.72f, skinB = 0.62f;
+            box(view, hx - (float) Math.cos(b.aimYaw) * 0.18f, hy, hz + (float) Math.sin(b.aimYaw) * 0.18f,
+                    0.14f, 0.14f, 0.14f, skin, skinG, skinB, 1f);
+            box(view, hx + (float) Math.cos(b.aimYaw) * 0.18f, hy, hz - (float) Math.sin(b.aimYaw) * 0.18f,
+                    0.14f, 0.14f, 0.14f, skin, skinG, skinB, 1f);
+            box(view, hx, 0.16f, hz, 0.44f, 0.16f, 0.34f, 0.18f, 0.18f, 0.20f, 1f);
+        } else {
+            // 枪
+            boxYaw(view, b.x + (float) Math.sin(b.aimYaw) * 0.36f, 1.16f + y0,
+                    b.z - (float) Math.cos(b.aimYaw) * 0.36f, b.aimYaw,
+                    0.10f, 0.10f, 0.56f, 0.13f, 0.13f, 0.15f, 1f);
+        }
+
+        // 携带炸弹的标记
+        if (b.hasBomb && !b.planting) {
+            box(view, b.x, 1.90f, b.z, 0.28f, 0.10f, 0.28f, 0.90f, 0.75f, 0.20f, 1f);
+        }
     }
 
     private void drawViewModel() {
@@ -300,6 +385,12 @@ public class GameRenderer implements GLSurfaceView.Renderer {
         if (p.adsT > 0.85f && p.current.scoped) return;
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
+
+        // 下包 / 拆包：收起枪，双手操作炸弹
+        if (p.planting || p.defusing) {
+            drawPlantHands();
+            return;
+        }
 
         float drop = 0f;
         if (p.switchT > 0f) {
@@ -363,6 +454,21 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             box(vm, 0f, 0.01f, -0.24f, 0.035f, 0.014f, 0.36f, 0.78f, 0.80f, 0.84f, 1f);
             box(vm, 0f, 0.00f, 0.00f, 0.05f, 0.06f, 0.12f, 0.20f, 0.14f, 0.09f, 1f);
         }
+    }
+
+    private void drawPlantHands() {
+        float wob = (float) Math.sin(s.time * 10f) * 0.022f;
+        float down = s.player.defusing ? 0.10f : 0f;
+        Matrix.setIdentityM(vm, 0);
+        Matrix.translateM(vm, 0, 0f, -0.30f - down + wob, -0.55f);
+        float skin = 0.84f, skinG = 0.70f, skinB = 0.60f;
+        box(vm, -0.17f, 0.02f, -0.02f, 0.15f, 0.24f, 0.15f, skin, skinG, skinB, 1f);
+        box(vm, 0.17f, 0.02f, -0.02f, 0.15f, 0.24f, 0.15f, skin, skinG, skinB, 1f);
+        box(vm, -0.17f, -0.09f, -0.10f, 0.17f, 0.11f, 0.22f, skin * 0.92f, skinG * 0.92f, skinB * 0.92f, 1f);
+        box(vm, 0.17f, -0.09f, -0.10f, 0.17f, 0.11f, 0.22f, skin * 0.92f, skinG * 0.92f, skinB * 0.92f, 1f);
+        box(vm, 0f, -0.16f, -0.12f, 0.36f, 0.13f, 0.28f, 0.18f, 0.18f, 0.20f, 1f);
+        float blink = (float) Math.sin(s.time * 6f) > 0f ? 1f : 0.25f;
+        box(vm, 0f, -0.11f, -0.12f, 0.08f, 0.05f, 0.08f, blink, 0.20f, 0.12f, 1f);
     }
 
     private void muzzle(WeaponType w, float x, float y, float z) {

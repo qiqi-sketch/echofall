@@ -26,6 +26,14 @@ public class Bot {
     public float holdX, holdZ;      // 目标点位（A/B 点或炸弹）
     public boolean planting = false;
     public boolean defusing = false;
+    public float animT = 0f;        // 下包/拆包动作进度
+
+    public WeaponType weapon = WeaponType.PISTOL;
+    public int money = 800;
+    public boolean hasBomb = false;
+    public float bob = 0f;          // 走路上下起伏
+    public float pickupX = -1f, pickupZ = -1f;  // 想捡的枪
+    public float scanT = 0f;
 
     public final List<float[]> path = new ArrayList<>();
     public int pathIndex = 0;

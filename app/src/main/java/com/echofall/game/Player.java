@@ -30,6 +30,9 @@ public class Player {
     public float bob = 0f;
     public float respawnT = 0f;
     public float recoilT = 0f;
+    public boolean planting = false;
+    public boolean defusing = false;
+    public boolean hasBomb = false;
 
     public boolean owns(WeaponType w) {
         if (w == WeaponType.KNIFE) return true;
@@ -37,6 +40,7 @@ public class Player {
     }
 
     public float eyeHeight() {
+        if (planting || defusing) return 0.88f;
         switch (stance) {
             case STANCE_CROUCH:
                 return 1.02f;

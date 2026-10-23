@@ -2,6 +2,7 @@ package com.echofall.game;
 
 import android.content.Context;
 import android.content.SharedPreferences;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
@@ -51,6 +52,13 @@ public class HudView extends View {
     private final RectF shopClose = new RectF();
     private final RectF[] setRects = new RectF[N_SET];
     private final long createdAt = SystemClock.uptimeMillis();
+
+    // 小地图
+    private Bitmap radar;
+    private final Paint radarPaint = new Paint(Paint.ANTI_ALIAS_FLAG | Paint.FILTER_BITMAP_FLAG);
+    private final RectF radarDst = new RectF();
+    private final Path radarPath = new Path();
+    private final Paint radarDot = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public HudView(Context c, GameState state) {
         super(c);
@@ -372,6 +380,7 @@ public class HudView extends View {
         drawStatus(c, w, h);
         drawRound(c, w, h);
         drawTeamList(c, w, h);
+        drawRadar(c, w, h);
         drawDiagnostics(c, w, h);
         drawJoystick(c, w, h);
         drawButtons(c, w, h);
@@ -464,6 +473,17 @@ public class HudView extends View {
         p.setColor(0xFF90B4D8);
         p.setTextSize(h * 0.019f);
         c.drawText("姿态 " + stance + (s.player.ads ? " · 开镜" : ""), bx0, by0 - h * 0.010f, p);
+
+        if (s.player.hasBomb && s.mode == GameState.MODE_DEFUSE && !s.bombPlanted) {
+            p.setColor(0xFFFFD166);
+            p.setTextSize(h * 0.020f);
+            c.drawText("携带炸弹 · 前往 " + (s.bombSite == 0 ? "A" : "B") + " 点安放",
+                    bx0, by0 - h * 0.032f, p);
+        } else if (s.bombPlanted && s.player.team == GameState.TEAM_CT && s.player.hp > 0) {
+            p.setColor(0xFF5CC8FF);
+            p.setTextSize(h * 0.020f);
+            c.drawText("前往炸弹处拆除", bx0, by0 - h * 0.032f, p);
+        }
 
         // 弹药
         WeaponType wt = s.player.current;
@@ -610,6 +630,89 @@ public class HudView extends View {
             p.setColor(0xFFFF8A8A);
             c.drawText(err, w * 0.025f, h * 0.058f, p);
         }
+    }
+
+    private void drawRadar(Canvas c, float w, float h) {
+        if (radar == null) {
+            int[] px = s.map.radarPixels();
+            radar = Bitmap.createBitmap(px, MapGrid.W, MapGrid.H, Bitmap.Config.ARGB_8888);
+        }
+        float size = Math.min(w, h) * 0.30f;
+        float left = w - size - w * 0.018f;
+        float top = h * 0.045f;
+        radarDst.set(left, top, left + size, top + size);
+
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0xCC0B0F16);
+        c.drawRoundRect(new RectF(left - 4, top - 4, left + size + 4, top + size + 4), 8, 8, p);
+
+        radarPaint.setAlpha(235);
+        c.drawBitmap(radar, null, radarDst, radarPaint);
+
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(2f);
+        p.setColor(0xAA8FA3C0);
+        c.drawRoundRect(radarDst, 5, 5, p);
+        p.setStyle(Paint.Style.FILL);
+
+        float sx = size / MapGrid.W;
+        float sz = size / MapGrid.H;
+
+        p.setTextSize(size * 0.13f);
+        p.setTextAlign(Paint.Align.CENTER);
+        p.setColor(0xFFFF8A6A);
+        c.drawText("A", left + MapGrid.A_CENTER_X * sx, top + MapGrid.A_CENTER_Z * sz, p);
+        p.setColor(0xFF7FB4FF);
+        c.drawText("B", left + MapGrid.B_CENTER_X * sx, top + MapGrid.B_CENTER_Z * sz, p);
+        p.setTextAlign(Paint.Align.LEFT);
+
+        // 队友始终可见，敌人只在 26 米内且有视线时显示
+        for (Bot b : s.bots) {
+            if (!b.alive) continue;
+            boolean ally = b.team == s.player.team;
+            if (!ally) {
+                float d = (float) Math.hypot(b.x - s.player.x, b.z - s.player.z);
+                if (d > 26f || !s.map.lineOfSight(s.player.x, s.player.z, b.x, b.z)) continue;
+            }
+            radarDot.setColor(ally ? 0xFF6FE08A : 0xFFFF5A4A);
+            c.drawCircle(left + b.x * sx, top + b.z * sz,
+                    Math.max(2f, size * 0.018f), radarDot);
+        }
+
+        if (s.bombPlanted) {
+            boolean on = (int) (s.time * 4f) % 2 == 0;
+            radarDot.setColor(on ? 0xFFFF3B3B : 0xFFFFB03B);
+            c.drawCircle(left + s.bombX * sx, top + s.bombZ * sz,
+                    Math.max(3f, size * 0.024f), radarDot);
+        }
+
+        float px = left + s.player.x * sx;
+        float py = top + s.player.z * sz;
+        c.save();
+        c.rotate((float) Math.toDegrees(s.player.yaw), px, py);
+        radarPath.reset();
+        float a = Math.max(4f, size * 0.032f);
+        radarPath.moveTo(px, py - a * 1.6f);
+        radarPath.lineTo(px - a, py + a);
+        radarPath.lineTo(px + a, py + a);
+        radarPath.close();
+        p.setColor(0xFFFFFFFF);
+        c.drawPath(radarPath, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(1.5f);
+        p.setColor(0xFF101820);
+        c.drawPath(radarPath, p);
+        p.setStyle(Paint.Style.FILL);
+        c.restore();
+
+        if (s.player.hasBomb) {
+            radarDot.setColor(0xFFFFD166);
+            c.drawCircle(px, py, Math.max(3f, size * 0.020f), radarDot);
+        }
+
+        p.setTextSize(size * 0.10f);
+        p.setColor(0x99AFC4DA);
+        c.drawText("N", left + 3, top + size * 0.12f, p);
     }
 
     private void drawJoystick(Canvas c, float w, float h) {
