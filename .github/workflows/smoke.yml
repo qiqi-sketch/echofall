@@ -31,17 +31,19 @@ jobs:
       - name: Run on emulator and collect logcat
         uses: reactivecircus/android-emulator-runner@v2
         with:
-          api-level: 30
-          target: google_apis
+          api-level: 28
+          target: default
           arch: x86_64
           profile: pixel_2
-          disable-animations: true
-          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
+          disable-animations: false
+          emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -no-snapshot -memory 2048 -partition-size 2048
           script: |
-            adb install -r app/build/outputs/apk/debug/app-debug.apk
+            adb wait-for-device
+            sleep 30
+            adb install -r app/build/outputs/apk/debug/app-debug.apk || (sleep 20 && adb install -r app/build/outputs/apk/debug/app-debug.apk)
             adb logcat -c
             adb shell am start -W -n com.echofall.game/.MainActivity
-            sleep 15
+            sleep 20
             adb logcat -d -v threadtime > logcat.txt
             echo "===== CRASH / APP LOG ====="
             grep -E "FATAL|AndroidRuntime|echofall|libEGL|GLSurfaceView" logcat.txt | tail -120
