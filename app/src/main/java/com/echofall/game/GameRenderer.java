@@ -33,7 +33,7 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             "uniform mat4 uMvp;\n" +
             "attribute vec3 aPos;\n" +
             "attribute vec3 aNor;\n" +
-            "varying vec3 vNor;\n" +
+            "varying mediump vec3 vNor;\n" +
             "void main(){\n" +
             "  vNor = aNor;\n" +
             "  gl_Position = uMvp * vec4(aPos, 1.0);\n" +
@@ -42,12 +42,28 @@ public class GameRenderer implements GLSurfaceView.Renderer {
     private static final String FS =
             "precision mediump float;\n" +
             "uniform vec4 uColor;\n" +
-            "varying vec3 vNor;\n" +
+            "varying mediump vec3 vNor;\n" +
             "void main(){\n" +
             "  vec3 n = normalize(vNor);\n" +
             "  float d = max(dot(n, normalize(vec3(0.45, 0.9, 0.35))), 0.0);\n" +
             "  vec3 c = uColor.rgb * (0.38 + 0.62 * d);\n" +
             "  gl_FragColor = vec4(c, uColor.a);\n" +
+            "}\n";
+
+    // 简化着色器：部分老设备的 GPU 驱动对 varying / 精度比较挑剔，
+    // 光照版本链接失败时退回这个纯色版本，保证还能玩。
+    private static final String FLAT_VS =
+            "uniform mat4 uMvp;\n" +
+            "attribute vec3 aPos;\n" +
+            "void main(){\n" +
+            "  gl_Position = uMvp * vec4(aPos, 1.0);\n" +
+            "}\n";
+
+    private static final String FLAT_FS =
+            "precision mediump float;\n" +
+            "uniform vec4 uColor;\n" +
+            "void main(){\n" +
+            "  gl_FragColor = uColor;\n" +
             "}\n";
 
     public GameRenderer(GameState state) {
@@ -85,61 +101,113 @@ public class GameRenderer implements GLSurfaceView.Renderer {
 
     @Override
     public void onSurfaceCreated(GL10 gl, EGLConfig config) {
-        int vs = loadShader(GLES20.GL_VERTEX_SHADER, VS);
-        int fs = loadShader(GLES20.GL_FRAGMENT_SHADER, FS);
-        program = GLES20.glCreateProgram();
-        GLES20.glAttachShader(program, vs);
-        GLES20.glAttachShader(program, fs);
-        GLES20.glLinkProgram(program);
-        GLES20.glUseProgram(program);
+        try {
+            s.glInfo = "GL " + GLES20.glGetString(GLES20.GL_VERSION);
+            program = buildProgram(VS, FS);
+            if (program == 0) {
+                program = buildProgram(FLAT_VS, FLAT_FS);
+                if (program == 0) {
+                    s.glError = "着色器编译失败，无法渲染";
+                    return;
+                }
+                android.util.Log.w("Echofall", "使用简化着色器");
+            }
 
-        aPos = GLES20.glGetAttribLocation(program, "aPos");
-        aNor = GLES20.glGetAttribLocation(program, "aNor");
-        uMvp = GLES20.glGetUniformLocation(program, "uMvp");
-        uColor = GLES20.glGetUniformLocation(program, "uColor");
+            aNor = -1;
+            aPos = GLES20.glGetAttribLocation(program, "aPos");
+            aNor = GLES20.glGetAttribLocation(program, "aNor");
+            uMvp = GLES20.glGetUniformLocation(program, "uMvp");
+            uColor = GLES20.glGetUniformLocation(program, "uColor");
 
-        cube.position(0);
-        GLES20.glEnableVertexAttribArray(aPos);
-        GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, 24, cube);
-        cube.position(3);
-        GLES20.glEnableVertexAttribArray(aNor);
-        GLES20.glVertexAttribPointer(aNor, 3, GLES20.GL_FLOAT, false, 24, cube);
+            if (aPos >= 0) {
+                cube.position(0);
+                GLES20.glEnableVertexAttribArray(aPos);
+                GLES20.glVertexAttribPointer(aPos, 3, GLES20.GL_FLOAT, false, 24, cube);
+            }
+            if (aNor >= 0) {
+                cube.position(3);
+                GLES20.glEnableVertexAttribArray(aNor);
+                GLES20.glVertexAttribPointer(aNor, 3, GLES20.GL_FLOAT, false, 24, cube);
+            }
 
-        GLES20.glClearColor(0.07f, 0.08f, 0.11f, 1f);
-        last = System.nanoTime();
+            GLES20.glClearColor(0.07f, 0.08f, 0.11f, 1f);
+            s.glError = null;
+            last = System.nanoTime();
+        } catch (Throwable e) {
+            s.glError = "GL 初始化失败: " + e;
+            android.util.Log.e("Echofall", "onSurfaceCreated", e);
+        }
     }
 
-    private int loadShader(int type, String src) {
+    private int buildProgram(String vsSrc, String fsSrc) {
+        int vs = compile(GLES20.GL_VERTEX_SHADER, vsSrc);
+        int fs = compile(GLES20.GL_FRAGMENT_SHADER, fsSrc);
+        if (vs == 0 || fs == 0) return 0;
+        int p = GLES20.glCreateProgram();
+        GLES20.glAttachShader(p, vs);
+        GLES20.glAttachShader(p, fs);
+        GLES20.glLinkProgram(p);
+        int[] linked = new int[1];
+        GLES20.glGetProgramiv(p, GLES20.GL_LINK_STATUS, linked, 0);
+        GLES20.glDeleteShader(vs);
+        GLES20.glDeleteShader(fs);
+        if (linked[0] == 0) {
+            android.util.Log.e("Echofall", "Program link failed: "
+                    + GLES20.glGetProgramInfoLog(p));
+            GLES20.glDeleteProgram(p);
+            return 0;
+        }
+        return p;
+    }
+
+    private int compile(int type, String src) {
         int sh = GLES20.glCreateShader(type);
         GLES20.glShaderSource(sh, src);
         GLES20.glCompileShader(sh);
         int[] ok = new int[1];
         GLES20.glGetShaderiv(sh, GLES20.GL_COMPILE_STATUS, ok, 0);
         if (ok[0] == 0) {
-            throw new RuntimeException("Shader: " + GLES20.glGetShaderInfoLog(sh));
+            android.util.Log.e("Echofall", "Shader compile failed: "
+                    + GLES20.glGetShaderInfoLog(sh) + "\n---\n" + src);
+            GLES20.glDeleteShader(sh);
+            return 0;
         }
         return sh;
     }
 
     @Override
     public void onSurfaceChanged(GL10 gl, int width, int height) {
-        GLES20.glViewport(0, 0, width, height);
-        float aspect = width / (float) Math.max(1, height);
-        Matrix.perspectiveM(proj, 0, 70f, aspect, 0.1f, 120f);
+        try {
+            int w = Math.max(1, width);
+            int h = Math.max(1, height);
+            GLES20.glViewport(0, 0, w, h);
+            Matrix.perspectiveM(proj, 0, 70f, w / (float) h, 0.1f, 120f);
+        } catch (Throwable e) {
+            s.glError = "GL 尺寸设置失败: " + e;
+            android.util.Log.e("Echofall", "onSurfaceChanged", e);
+        }
     }
 
     @Override
     public void onDrawFrame(GL10 gl) {
-        long now = System.nanoTime();
-        float dt = (now - last) / 1_000_000_000f;
-        last = now;
-        s.update(dt);
-
-        drawWorld();
+        try {
+            long now = System.nanoTime();
+            float dt = (now - last) / 1_000_000_000f;
+            last = now;
+            s.update(dt);
+            drawWorld();
+            s.glFrames++;
+        } catch (Throwable e) {
+            if (s.glError == null) {
+                s.glError = "渲染异常: " + e;
+                android.util.Log.e("Echofall", "onDrawFrame", e);
+            }
+        }
     }
 
     private void drawWorld() {
         GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT | GLES20.GL_DEPTH_BUFFER_BIT);
+        if (program == 0) return;
         GLES20.glUseProgram(program);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glDisable(GLES20.GL_CULL_FACE);

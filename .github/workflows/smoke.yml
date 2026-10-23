@@ -43,15 +43,20 @@ jobs:
             adb install -r app/build/outputs/apk/debug/app-debug.apk || (sleep 20 && adb install -r app/build/outputs/apk/debug/app-debug.apk)
             adb logcat -c
             adb shell am start -W -n com.echofall.game/.MainActivity
-            sleep 20
+            sleep 25
+            echo "===== PROCESS ====="
+            adb shell pidof com.echofall.game || echo "PROCESS_DEAD"
+            adb exec-out screencap -p > screen.png
             adb logcat -d -v threadtime > logcat.txt
             echo "===== CRASH / APP LOG ====="
-            grep -E "FATAL|AndroidRuntime|echofall|libEGL|GLSurfaceView" logcat.txt | tail -120
+            grep -E "FATAL|AndroidRuntime|Echofall|libEGL|GLSurfaceView" logcat.txt | tail -150
 
-      - name: Upload logcat
+      - name: Upload logcat and screenshot
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: logcat
-          path: logcat.txt
+          name: smoke-result
+          path: |
+            logcat.txt
+            screen.png
           if-no-files-found: warn

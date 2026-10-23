@@ -7,6 +7,7 @@
 
     <application
         android:allowBackup="true"
+        android:name=".EchofallApp"
         android:icon="@drawable/ic_launcher"
         android:label="Echofall"
         android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">

@@ -6,6 +6,7 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.RectF;
 import android.graphics.Typeface;
+import android.os.SystemClock;
 import android.view.MotionEvent;
 import android.view.View;
 
@@ -36,6 +37,7 @@ public class HudView extends View {
 
     private final RectF[] shopRects = new RectF[5];
     private final RectF shopClose = new RectF();
+    private final long createdAt = SystemClock.uptimeMillis();
 
     public HudView(Context c, GameState state) {
         super(c);
@@ -257,6 +259,7 @@ public class HudView extends View {
 
         drawCrosshair(c, w, h);
         drawStatus(c, w, h);
+        drawDiagnostics(c, w, h);
         drawJoystick(c, w, h);
         drawButtons(c, w, h);
 
@@ -352,6 +355,24 @@ public class HudView extends View {
             c.drawText("阵亡 · " + String.format("%.1f", Math.max(0, s.player.respawnT)) + " 秒后重生",
                     w / 2f, h / 2f - h * 0.08f, p);
             p.setTextAlign(Paint.Align.LEFT);
+        }
+    }
+
+    private void drawDiagnostics(Canvas c, float w, float h) {
+        p.setStyle(Paint.Style.FILL);
+        p.setTextAlign(Paint.Align.LEFT);
+        p.setTextSize(h * 0.017f);
+        p.setColor(0x8890A8C0);
+        c.drawText("v" + BuildConfig.VERSION_NAME + "  " + s.glInfo, w * 0.025f, h * 0.030f, p);
+
+        String err = s.glError;
+        if (err == null && s.glFrames == 0 && SystemClock.uptimeMillis() - createdAt > 4000) {
+            err = "渲染未启动（黑屏请截图反馈）";
+        }
+        if (err != null) {
+            p.setTextSize(h * 0.020f);
+            p.setColor(0xFFFF8A8A);
+            c.drawText(err, w * 0.025f, h * 0.058f, p);
         }
     }
 

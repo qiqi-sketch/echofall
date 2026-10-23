@@ -16,6 +16,11 @@ public class GameState {
     public float toastT = 0f;
     public float damageFlash = 0f;
 
+    // 渲染诊断信息（由渲染线程写入，UI 线程读取）
+    public volatile String glError = null;
+    public volatile String glInfo = "";
+    public volatile int glFrames = 0;
+
     private static final float[][] SPAWNS = {
             {3.5f, 3.5f}, {MapGrid.W - 3.5f, 3.5f},
             {3.5f, MapGrid.H - 3.5f}, {MapGrid.W - 3.5f, MapGrid.H - 3.5f}

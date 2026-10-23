@@ -10,7 +10,7 @@ public class GameView extends GLSurfaceView {
     public GameView(Context context) {
         super(context);
         setEGLContextClientVersion(2);
-        setEGLConfigChooser(8, 8, 8, 0, 16, 0);
+        setEGLConfigChooser(new FallbackConfigChooser());
         state = new GameState();
         renderer = new GameRenderer(state);
         setRenderer(renderer);
