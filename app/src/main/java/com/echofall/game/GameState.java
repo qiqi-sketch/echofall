@@ -58,6 +58,14 @@ public class GameState {
     public float gyroSens = 1.0f;
     public boolean gyroOn = false;
 
+    // 辅助功能（只作用于本机单机对局）
+    public boolean cheatEsp = false;      // 穿墙透视
+    public boolean cheatTrack = false;    // 子弹追踪
+    public boolean cheatLock = false;     // 枪锁（自动瞄准 + 对准后自动开火）
+    public boolean cheatAutoJump = false; // 自动连跳
+    public boolean cheatNoRecoil = false; // 无后坐力
+    public boolean cheatInfAmmo = false;  // 无限弹药
+
     public float roundTime = 0f;
     public float roundEndT = 0f;
     public int round = 1;
@@ -263,6 +271,24 @@ public class GameState {
         input.gyroDY = 0f;
         player.pitch = Math.max(-1.45f, Math.min(1.45f, player.pitch));
 
+        // 枪锁：把准星拉到最近的敌人身上，对准后自动开火
+        boolean lockedOn = false;
+        if (cheatLock) {
+            Bot t = findLockTarget();
+            if (t != null) {
+                float eyeY = player.y + player.eyeHeight();
+                float tx = t.x - player.x;
+                float tz = t.z - player.z;
+                float dh = (float) Math.hypot(tx, tz);
+                float wantYaw = (float) Math.atan2(tx, -tz);
+                float wantPitch = (float) Math.atan2(1.30f - eyeY, Math.max(dh, 0.1f));
+                player.yaw = turnToward(player.yaw, wantYaw, 9f * dt);
+                player.pitch += (wantPitch - player.pitch) * Math.min(1f, dt * 18f);
+                player.pitch = Math.max(-1.45f, Math.min(1.45f, player.pitch));
+                lockedOn = Math.abs(angleDiff(player.yaw, wantYaw)) < 0.09f;
+            }
+        }
+
         if (input.adsPressed) {
             input.adsPressed = false;
             toggleAds();
@@ -322,6 +348,9 @@ public class GameState {
             player.y = 0f;
             player.vy = 0f;
         }
+        if (cheatAutoJump && player.y <= 0.001f && player.stance == Player.STANCE_STAND) {
+            player.vy = 5.4f;
+        }
 
         float moveAmount = (float) Math.hypot(dx, dz) / Math.max(dt, 0.0001f);
         if (moveAmount > 0.2f && player.y <= 0.001f) {
@@ -354,7 +383,9 @@ public class GameState {
             wantFire = input.firePressed;
         }
         input.firePressed = false;
-        if (wantFire && !player.planting && !player.defusing) playerFire();
+        boolean lockFire = cheatLock && lockedOn
+                && (cheatInfAmmo || player.mag[player.current.ordinal()] > 0);
+        if ((wantFire || lockFire) && !player.planting && !player.defusing) playerFire();
 
         // 站着不动才能下包/拆包，由 updateBomb 判定
         player.planting = false;
@@ -409,6 +440,10 @@ public class GameState {
         }
 
         int oi = w.ordinal();
+        if (cheatInfAmmo) {
+            player.mag[oi] = w.magSize;
+            player.reserve[oi] = w.reserveSize;
+        }
         if (player.mag[oi] <= 0) {
             player.fireCd = 0.35f;
             msg("弹匣已空，按换弹");
@@ -420,9 +455,32 @@ public class GameState {
 
         float eyeY = player.y + player.eyeHeight();
         float spread = w.spread * (1f - 0.75f * player.adsT) * player.stanceSpeed();
+        if (cheatNoRecoil) spread *= 0.2f;
+
+        // 子弹追踪：把弹道直接拉到最近的敌人身上
+        boolean tracking = false;
+        float trackYaw = 0f, trackPitch = 0f;
+        if (cheatTrack) {
+            Bot t = nearestEnemyWithin(w.range);
+            if (t != null) {
+                float tx = t.x - player.x;
+                float tz = t.z - player.z;
+                float dh = (float) Math.hypot(tx, tz);
+                trackYaw = (float) Math.atan2(tx, -tz);
+                trackPitch = (float) Math.atan2(1.15f - eyeY, Math.max(dh, 0.1f));
+                tracking = true;
+            }
+        }
+
         for (int i = 0; i < w.pellets; i++) {
-            float yaw = player.yaw + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread);
-            float pitch = player.pitch + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread);
+            float yaw, pitch;
+            if (tracking) {
+                yaw = trackYaw + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread * 0.12f);
+                pitch = trackPitch + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread * 0.12f);
+            } else {
+                yaw = player.yaw + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread);
+                pitch = player.pitch + (float) Math.toRadians((rnd.nextFloat() - 0.5f) * spread);
+            }
             float cp = (float) Math.cos(pitch);
             float dx = (float) (Math.sin(yaw) * cp);
             float dy = (float) Math.sin(pitch);
@@ -430,8 +488,55 @@ public class GameState {
             playerShoot(w, player.x, eyeY, player.z, dx, dy, dz);
         }
 
-        player.pitch = Math.min(1.45f, player.pitch + w.recoil * 0.004f);
+        if (!cheatNoRecoil) {
+            player.pitch = Math.min(1.45f, player.pitch + w.recoil * 0.004f);
+        }
         player.recoilT = 1f;
+    }
+
+    private Bot findLockTarget() {
+        float cp = (float) Math.cos(player.pitch);
+        float fx = (float) (Math.sin(player.yaw) * cp);
+        float fy = (float) Math.sin(player.pitch);
+        float fz = (float) (-Math.cos(player.yaw) * cp);
+        float eyeY = player.y + player.eyeHeight();
+        Bot best = null;
+        float bestDot = 0.82f; // 只锁准星附近约 35 度内的目标
+        for (Bot b : bots) {
+            if (!b.alive || b.team == player.team) continue;
+            float tx = b.x - player.x;
+            float ty = 1.20f - eyeY;
+            float tz = b.z - player.z;
+            float d = (float) Math.sqrt(tx * tx + ty * ty + tz * tz);
+            if (d > 90f) continue;
+            float dot = (tx * fx + ty * fy + tz * fz) / Math.max(d, 0.001f);
+            if (dot > bestDot) {
+                bestDot = dot;
+                best = b;
+            }
+        }
+        return best;
+    }
+
+    private Bot nearestEnemyWithin(float range) {
+        Bot best = null;
+        float bestD = range;
+        for (Bot b : bots) {
+            if (!b.alive || b.team == player.team) continue;
+            float d = (float) Math.hypot(b.x - player.x, b.z - player.z);
+            if (d < bestD) {
+                bestD = d;
+                best = b;
+            }
+        }
+        return best;
+    }
+
+    private float angleDiff(float a, float b) {
+        float diff = b - a;
+        while (diff > Math.PI) diff -= (float) (Math.PI * 2);
+        while (diff < -Math.PI) diff += (float) (Math.PI * 2);
+        return diff;
     }
 
     private void playerShoot(WeaponType w, float ox, float oy, float oz,

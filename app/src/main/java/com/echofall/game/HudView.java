@@ -18,11 +18,11 @@ public class HudView extends View {
     private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     private static final int FIRE = 0, JUMP = 1, RELOAD = 2, SWITCH = 3, BUY = 4, GEAR = 5,
-            CROUCH = 6, PRONE = 7, ADS = 8;
-    private static final int N_BTN = 9;
-    private static final String[] KEY_LABELS = {"开火", "跳", "换弹", "切枪", "商店", "设置", "蹲", "趴", "开镜"};
-    private static final float[] DEF_X = {0.870f, 0.735f, 0.930f, 0.845f, 0.100f, 0.945f, 0.645f, 0.575f, 0.735f};
-    private static final float[] DEF_Y = {0.755f, 0.900f, 0.535f, 0.620f, 0.800f, 0.100f, 0.745f, 0.895f, 0.600f};
+            CROUCH = 6, PRONE = 7, ADS = 8, CHEAT = 9;
+    private static final int N_BTN = 10;
+    private static final String[] KEY_LABELS = {"开火", "跳", "换弹", "切枪", "商店", "设置", "蹲", "趴", "开镜", "外挂"};
+    private static final float[] DEF_X = {0.870f, 0.735f, 0.930f, 0.845f, 0.100f, 0.945f, 0.645f, 0.575f, 0.735f, 0.100f};
+    private static final float[] DEF_Y = {0.755f, 0.900f, 0.535f, 0.620f, 0.800f, 0.100f, 0.745f, 0.895f, 0.600f, 0.700f};
 
     private static final String[] SHOP_IDS =
             {"rifle", "smg", "shotgun", "awp", "deagle", "pistol", "armor", "ammo", "sell"};
@@ -32,11 +32,16 @@ public class HudView extends View {
             SET_GSENS_D = 4, SET_GSENS_U = 5, SET_MODE = 6, SET_TEAM = 7, SET_CLOSE = 8;
     private static final int N_SET = 9;
 
+    private static final int CH_ESP = 0, CH_TRACK = 1, CH_LOCK = 2, CH_JUMP = 3,
+            CH_RECOIL = 4, CH_AMMO = 5, CH_CLOSE = 6;
+    private static final int N_CHEAT = 7;
+
     private final float[] bx = new float[N_BTN];
     private final float[] by = new float[N_BTN];
 
     private boolean shopOpen;
     private boolean settingsOpen;
+    private boolean cheatOpen;
     private boolean editMode;
     private int dragKey = -1;
     private float dragDX, dragDY;
@@ -51,6 +56,7 @@ public class HudView extends View {
     private final RectF[] shopRects = new RectF[N_SHOP];
     private final RectF shopClose = new RectF();
     private final RectF[] setRects = new RectF[N_SET];
+    private final RectF[] cheatRects = new RectF[N_CHEAT];
     private final long createdAt = SystemClock.uptimeMillis();
 
     // 小地图
@@ -66,8 +72,10 @@ public class HudView extends View {
         prefs = c.getSharedPreferences("echofall_binds", Context.MODE_PRIVATE);
         for (int i = 0; i < N_SHOP; i++) shopRects[i] = new RectF();
         for (int i = 0; i < N_SET; i++) setRects[i] = new RectF();
+        for (int i = 0; i < N_CHEAT; i++) cheatRects[i] = new RectF();
         loadBinds();
         loadSettings();
+        loadCheats();
         setFocusable(true);
     }
 
@@ -109,6 +117,31 @@ public class HudView extends View {
                 .apply();
     }
 
+    private void loadCheats() {
+        s.cheatEsp = prefs.getBoolean("cheatEsp", false);
+        s.cheatTrack = prefs.getBoolean("cheatTrack", false);
+        s.cheatLock = prefs.getBoolean("cheatLock", false);
+        s.cheatAutoJump = prefs.getBoolean("cheatAutoJump", false);
+        s.cheatNoRecoil = prefs.getBoolean("cheatNoRecoil", false);
+        s.cheatInfAmmo = prefs.getBoolean("cheatInfAmmo", false);
+    }
+
+    private void saveCheats() {
+        prefs.edit()
+                .putBoolean("cheatEsp", s.cheatEsp)
+                .putBoolean("cheatTrack", s.cheatTrack)
+                .putBoolean("cheatLock", s.cheatLock)
+                .putBoolean("cheatAutoJump", s.cheatAutoJump)
+                .putBoolean("cheatNoRecoil", s.cheatNoRecoil)
+                .putBoolean("cheatInfAmmo", s.cheatInfAmmo)
+                .apply();
+    }
+
+    private boolean anyCheatOn() {
+        return s.cheatEsp || s.cheatTrack || s.cheatLock
+                || s.cheatAutoJump || s.cheatNoRecoil || s.cheatInfAmmo;
+    }
+
     private float radius(int key) {
         float base = Math.min(getWidth(), getHeight());
         if (key == FIRE) return base * 0.076f;
@@ -130,6 +163,10 @@ public class HudView extends View {
     }
 
     public boolean handleBack() {
+        if (cheatOpen) {
+            cheatOpen = false;
+            return true;
+        }
         if (settingsOpen) {
             settingsOpen = false;
             return true;
@@ -166,6 +203,16 @@ public class HudView extends View {
     }
 
     private void down(int id, float x, float y) {
+        if (cheatOpen) {
+            for (int i = 0; i < N_CHEAT; i++) {
+                if (cheatRects[i].contains(x, y)) {
+                    handleCheat(i);
+                    return;
+                }
+            }
+            return;
+        }
+
         if (settingsOpen) {
             for (int i = 0; i < N_SET; i++) {
                 if (setRects[i].contains(x, y)) {
@@ -207,6 +254,10 @@ public class HudView extends View {
 
         if (hitButton(GEAR, x, y)) {
             settingsOpen = true;
+            return;
+        }
+        if (hitButton(CHEAT, x, y)) {
+            cheatOpen = true;
             return;
         }
         if (hitButton(BUY, x, y)) {
@@ -301,6 +352,44 @@ public class HudView extends View {
         }
     }
 
+    private void handleCheat(int i) {
+        switch (i) {
+            case CH_ESP:
+                s.cheatEsp = !s.cheatEsp;
+                toast(s.cheatEsp ? "ESP 透视：开" : "ESP 透视：关");
+                break;
+            case CH_TRACK:
+                s.cheatTrack = !s.cheatTrack;
+                toast(s.cheatTrack ? "子弹追踪：开" : "子弹追踪：关");
+                break;
+            case CH_LOCK:
+                s.cheatLock = !s.cheatLock;
+                toast(s.cheatLock ? "枪锁：开（对准自动开火）" : "枪锁：关");
+                break;
+            case CH_JUMP:
+                s.cheatAutoJump = !s.cheatAutoJump;
+                toast(s.cheatAutoJump ? "自动连跳：开" : "自动连跳：关");
+                break;
+            case CH_RECOIL:
+                s.cheatNoRecoil = !s.cheatNoRecoil;
+                toast(s.cheatNoRecoil ? "无后坐力：开" : "无后坐力：关");
+                break;
+            case CH_AMMO:
+                s.cheatInfAmmo = !s.cheatInfAmmo;
+                toast(s.cheatInfAmmo ? "无限弹药：开" : "无限弹药：关");
+                break;
+            default:
+                cheatOpen = false;
+                break;
+        }
+        saveCheats();
+    }
+
+    private void toast(String text) {
+        s.toast = text;
+        s.toastT = 1.4f;
+    }
+
     private void move(int id, float x, float y) {
         if (editMode && dragKey >= 0) {
             bx[dragKey] = clamp((x + dragDX) / getWidth(), 0.04f, 0.96f);
@@ -393,6 +482,7 @@ public class HudView extends View {
 
         if (shopOpen) drawShop(c, w, h);
         if (settingsOpen) drawSettings(c, w, h);
+        if (cheatOpen) drawCheat(c, w, h);
         if (editMode) drawEditHint(c, w, h);
 
         postInvalidateOnAnimation();
@@ -639,7 +729,7 @@ public class HudView extends View {
         }
         float size = Math.min(w, h) * 0.30f;
         float left = w - size - w * 0.018f;
-        float top = h * 0.045f;
+        float top = h * 0.17f;
         radarDst.set(left, top, left + size, top + size);
 
         p.setStyle(Paint.Style.FILL);
@@ -666,11 +756,11 @@ public class HudView extends View {
         c.drawText("B", left + MapGrid.B_CENTER_X * sx, top + MapGrid.B_CENTER_Z * sz, p);
         p.setTextAlign(Paint.Align.LEFT);
 
-        // 队友始终可见，敌人只在 26 米内且有视线时显示
+        // 队友始终可见，敌人只在 26 米内且有视线时显示（开启 ESP 后全显）
         for (Bot b : s.bots) {
             if (!b.alive) continue;
             boolean ally = b.team == s.player.team;
-            if (!ally) {
+            if (!ally && !s.cheatEsp) {
                 float d = (float) Math.hypot(b.x - s.player.x, b.z - s.player.z);
                 if (d > 26f || !s.map.lineOfSight(s.player.x, s.player.z, b.x, b.z)) continue;
             }
@@ -740,6 +830,7 @@ public class HudView extends View {
             if (i == FIRE) p.setColor(active ? 0x88E04A4A : 0x55E04A4A);
             else if (i == ADS && active) p.setColor(0x8830A0C8);
             else if (i == GEAR && editMode) p.setColor(0x66FFD166);
+            else if (i == CHEAT && anyCheatOn()) p.setColor(0x66D03030);
             else p.setColor(0x44303A48);
             c.drawCircle(cx, cy, r, p);
 
@@ -923,6 +1014,73 @@ public class HudView extends View {
             c.drawText(label, (rx0 + rx1) / 2f,
                     setRects[i].top + setRects[i].height() * 0.66f, p);
             p.setTextAlign(Paint.Align.LEFT);
+        }
+    }
+
+    private void drawCheat(Canvas c, float w, float h) {
+        p.setStyle(Paint.Style.FILL);
+        p.setColor(0xCC0B0F16);
+        c.drawRect(0, 0, w, h, p);
+
+        float pw = w * 0.62f;
+        float ph = h * 0.92f;
+        float left = (w - pw) / 2f;
+        float top = (h - ph) / 2f;
+        p.setColor(0xF21A1216);
+        c.drawRoundRect(new RectF(left, top, left + pw, top + ph), 18, 18, p);
+        p.setStyle(Paint.Style.STROKE);
+        p.setStrokeWidth(3f);
+        p.setColor(0xFF7A2A34);
+        c.drawRoundRect(new RectF(left, top, left + pw, top + ph), 18, 18, p);
+        p.setStyle(Paint.Style.FILL);
+
+        p.setColor(0xFFFF6B6B);
+        p.setTextSize(h * 0.030f);
+        c.drawText("外挂 / 辅助 CHEATS", left + pw * 0.06f, top + ph * 0.072f, p);
+        p.setColor(0x88AFC4DA);
+        p.setTextSize(h * 0.016f);
+        c.drawText("仅作用于本机单机对局", left + pw * 0.06f, top + ph * 0.100f, p);
+
+        float rowTop = top + ph * 0.135f;
+        float rowH = ph * 0.102f;
+        float rx0 = left + pw * 0.05f;
+        float rx1 = left + pw * 0.95f;
+
+        for (int i = 0; i < N_CHEAT; i++) {
+            cheatRects[i].set(rx0, rowTop + i * rowH, rx1, rowTop + (i + 1) * rowH - h * 0.008f);
+            String label;
+            boolean on = false;
+            switch (i) {
+                case CH_ESP: label = "ESP 透视（穿墙显示敌人）"; on = s.cheatEsp; break;
+                case CH_TRACK: label = "子弹追踪（自动命中最近敌人）"; on = s.cheatTrack; break;
+                case CH_LOCK: label = "枪锁（自动瞄准 + 自动开火）"; on = s.cheatLock; break;
+                case CH_JUMP: label = "自动连跳"; on = s.cheatAutoJump; break;
+                case CH_RECOIL: label = "无后坐力"; on = s.cheatNoRecoil; break;
+                case CH_AMMO: label = "无限弹药"; on = s.cheatInfAmmo; break;
+                default: label = "关闭"; break;
+            }
+
+            p.setColor(on ? 0xFF6E2028 : 0xFF232C3B);
+            c.drawRoundRect(cheatRects[i], 10, 10, p);
+            p.setStyle(Paint.Style.STROKE);
+            p.setStrokeWidth(2f);
+            p.setColor(on ? 0xFFB0414C : 0xFF34455C);
+            c.drawRoundRect(cheatRects[i], 10, 10, p);
+            p.setStyle(Paint.Style.FILL);
+
+            p.setTextSize(h * 0.023f);
+            p.setTextAlign(Paint.Align.LEFT);
+            p.setColor(i == CH_CLOSE ? 0xFF9DB2C8 : 0xFFEAF2FF);
+            c.drawText(label, cheatRects[i].left + pw * 0.045f,
+                    cheatRects[i].top + cheatRects[i].height() * 0.66f, p);
+
+            if (i != CH_CLOSE) {
+                p.setTextAlign(Paint.Align.RIGHT);
+                p.setColor(on ? 0xFFFF8080 : 0xFF6F8299);
+                c.drawText(on ? "开" : "关", cheatRects[i].right - pw * 0.045f,
+                        cheatRects[i].top + cheatRects[i].height() * 0.66f, p);
+                p.setTextAlign(Paint.Align.LEFT);
+            }
         }
     }
 }

@@ -310,6 +310,7 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             if (!b.alive) continue;
             drawActor(b);
         }
+        if (s.cheatEsp) drawEsp();
 
         // 弹道
         for (Tracer t : s.tracers) {
@@ -318,6 +319,27 @@ public class GameRenderer implements GLSurfaceView.Renderer {
         }
 
         drawViewModel();
+    }
+
+    private void drawEsp() {
+        GLES20.glDisable(GLES20.GL_DEPTH_TEST);
+        for (Bot b : s.bots) {
+            if (!b.alive) continue;
+            boolean ally = b.team == s.player.team;
+            if (ally) {
+                box(view, b.x, 1.02f, b.z, 0.70f, 2.02f, 0.70f, 0.30f, 0.90f, 0.55f, 0.10f);
+            } else {
+                box(view, b.x, 1.02f, b.z, 0.72f, 2.02f, 0.72f, 1f, 0.26f, 0.20f, 0.16f);
+                // 血条
+                box(view, b.x, 2.16f, b.z, 0.76f, 0.10f, 0.10f, 0.04f, 0.04f, 0.05f, 0.90f);
+                float k = Math.max(0f, b.hp) / 100f;
+                float r = k > 0.5f ? 0.30f : 1f;
+                float g = k > 0.5f ? 0.90f : 0.32f;
+                box(view, b.x - 0.38f + 0.38f * k, 2.16f, b.z,
+                        0.76f * k, 0.10f, 0.11f, r, g, 0.25f, 1f);
+            }
+        }
+        GLES20.glEnable(GLES20.GL_DEPTH_TEST);
     }
 
     private void drawSiteMarkers() {
