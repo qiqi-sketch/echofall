@@ -9,51 +9,65 @@ import java.util.Random;
 public class MapGrid {
     public static final int W = 40;
     public static final int H = 40;
+
+    // 每个点位：x0, z0, x1, z1（包含边界）
+    public static final int[] SITE_A = {27, 8, 35, 16};
+    public static final int[] SITE_B = {4, 8, 12, 16};
+
     public final boolean[][] wall = new boolean[W][H];
     private final Random rnd = new Random(12345);
 
     public MapGrid() {
+        // 先全部填充为墙，再挖出走廊和房间，保证一定连通
         for (int x = 0; x < W; x++) {
-            wall[x][0] = true;
-            wall[x][H - 1] = true;
-        }
-        for (int z = 0; z < H; z++) {
-            wall[0][z] = true;
-            wall[W - 1][z] = true;
-        }
-
-        Random r = new Random(20261023);
-        for (int i = 0; i < 70; i++) {
-            int bx = 2 + r.nextInt(W - 4);
-            int bz = 2 + r.nextInt(H - 4);
-            int bw = 1 + r.nextInt(3);
-            int bh = 1 + r.nextInt(3);
-            for (int x = bx; x < Math.min(W - 1, bx + bw); x++) {
-                for (int z = bz; z < Math.min(H - 1, bz + bh); z++) {
-                    wall[x][z] = true;
-                }
+            for (int z = 0; z < H; z++) {
+                wall[x][z] = true;
             }
         }
 
-        clearArea(3, 3);
-        clearArea(W - 4, 3);
-        clearArea(3, H - 4);
-        clearArea(W - 4, H - 4);
+        // 房间
+        carve(17, 2, 23, 8);      // CT 出生点
+        carve(17, 31, 23, 37);    // T 出生点
+        carve(SITE_A[0], SITE_A[1], SITE_A[2], SITE_A[3]); // A 点
+        carve(SITE_B[0], SITE_B[1], SITE_B[2], SITE_B[3]); // B 点
+        carve(17, 18, 23, 22);    // 中路小屋
 
-        // 中央通道，保证 AI 能绕图走动
-        for (int x = W / 2 - 1; x <= W / 2 + 1; x++) {
-            for (int z = 2; z < H - 2; z++) {
+        // 主干道
+        carve(19, 5, 21, 34);     // 中路
+        carve(23, 4, 27, 8);      // CT -> A 连接
+        carve(12, 4, 17, 8);      // CT -> B 连接
+        carve(21, 11, 28, 13);    // 中路 -> A
+        carve(11, 11, 19, 13);    // 中路 -> B
+        carve(24, 31, 33, 33);    // T -> A 下路
+        carve(31, 16, 33, 33);    // A 外侧长走廊
+        carve(6, 31, 17, 33);     // T -> B 下路
+        carve(6, 16, 8, 33);      // B 外侧长走廊
+
+        // 掩体
+        fill(29, 10, 30, 11);
+        fill(33, 13, 34, 14);
+        fill(31, 9, 31, 10);
+        fill(6, 10, 7, 11);
+        fill(10, 14, 10, 15);
+        fill(5, 13, 5, 14);
+        fill(17, 20, 18, 21);
+        fill(22, 20, 22, 21);
+        fill(18, 3, 19, 4);
+        fill(21, 35, 22, 36);
+    }
+
+    private void carve(int x0, int z0, int x1, int z1) {
+        for (int x = Math.max(1, x0); x <= Math.min(W - 2, x1); x++) {
+            for (int z = Math.max(1, z0); z <= Math.min(H - 2, z1); z++) {
                 wall[x][z] = false;
             }
         }
     }
 
-    private void clearArea(int cx, int cz) {
-        for (int x = cx - 2; x <= cx + 2; x++) {
-            for (int z = cz - 2; z <= cz + 2; z++) {
-                if (x > 0 && x < W - 1 && z > 0 && z < H - 1) {
-                    wall[x][z] = false;
-                }
+    private void fill(int x0, int z0, int x1, int z1) {
+        for (int x = Math.max(1, x0); x <= Math.min(W - 2, x1); x++) {
+            for (int z = Math.max(1, z0); z <= Math.min(H - 2, z1); z++) {
+                wall[x][z] = true;
             }
         }
     }
@@ -84,13 +98,29 @@ public class MapGrid {
         return true;
     }
 
+    public boolean inRect(int[] r, float x, float z) {
+        return x >= r[0] && x <= r[2] + 1 && z >= r[1] && z <= r[3] + 1;
+    }
+
+    public boolean inSiteA(float x, float z) {
+        return inRect(SITE_A, x, z);
+    }
+
+    public boolean inSiteB(float x, float z) {
+        return inRect(SITE_B, x, z);
+    }
+
+    public boolean inAnySite(float x, float z) {
+        return inSiteA(x, z) || inSiteB(x, z);
+    }
+
     public float[] randomFree() {
         for (int i = 0; i < 300; i++) {
             int x = 1 + rnd.nextInt(W - 2);
             int z = 1 + rnd.nextInt(H - 2);
             if (!wall[x][z]) return new float[]{x + 0.5f, z + 0.5f};
         }
-        return new float[]{W / 2f, H / 2f};
+        return new float[]{20.5f, 20.5f};
     }
 
     public List<float[]> findPath(float sx, float sz, float tx, float tz) {
@@ -99,7 +129,20 @@ public class MapGrid {
         int startZ = clamp((int) Math.floor(sz), 0, H - 1);
         int goalX = clamp((int) Math.floor(tx), 0, W - 1);
         int goalZ = clamp((int) Math.floor(tz), 0, H - 1);
-        if (wall[startX][startZ] || wall[goalX][goalZ]) return result;
+
+        // 起点/终点在墙里时向附近找一个可走的格子
+        if (wall[startX][startZ]) {
+            int[] f = nearestFree(startX, startZ);
+            if (f == null) return result;
+            startX = f[0];
+            startZ = f[1];
+        }
+        if (wall[goalX][goalZ]) {
+            int[] f = nearestFree(goalX, goalZ);
+            if (f == null) return result;
+            goalX = f[0];
+            goalZ = f[1];
+        }
 
         int n = W * H;
         float[] g = new float[n];
@@ -151,6 +194,19 @@ public class MapGrid {
             cur = parent[cur];
         }
         return result;
+    }
+
+    private int[] nearestFree(int cx, int cz) {
+        for (int r = 1; r <= 4; r++) {
+            for (int x = cx - r; x <= cx + r; x++) {
+                for (int z = cz - r; z <= cz + r; z++) {
+                    if (x > 0 && z > 0 && x < W - 1 && z < H - 1 && !wall[x][z]) {
+                        return new int[]{x, z};
+                    }
+                }
+            }
+        }
+        return null;
     }
 
     private int h(int x, int z, int gx, int gz) {

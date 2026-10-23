@@ -1,10 +1,15 @@
 package com.echofall.game;
 
 import android.app.Activity;
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
@@ -19,6 +24,31 @@ import java.io.StringWriter;
 public class MainActivity extends Activity {
     private GameView gameView;
     private HudView hud;
+
+    private SensorManager sensorManager;
+    private Sensor gyroSensor;
+    private int screenRotation = Surface.ROTATION_0;
+
+    private final SensorEventListener gyroListener = new SensorEventListener() {
+        @Override
+        public void onSensorChanged(SensorEvent e) {
+            GameState s = gameView == null ? null : gameView.state;
+            if (s == null || !s.gyroOn || e.values.length < 2) return;
+            // 设备坐标系 -> 横屏视角：x 轴对应左右转身，y 轴对应上下压枪
+            float yawRate = -e.values[0];
+            float pitchRate = e.values[1];
+            if (screenRotation == Surface.ROTATION_270) {
+                yawRate = -yawRate;
+                pitchRate = -pitchRate;
+            }
+            s.input.gyroDX = yawRate;
+            s.input.gyroDY = pitchRate;
+        }
+
+        @Override
+        public void onAccuracyChanged(Sensor sensor, int accuracy) {
+        }
+    };
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -39,6 +69,12 @@ public class MainActivity extends Activity {
 
             setContentView(root);
             hideSystemUi();
+
+            sensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+            if (sensorManager != null) {
+                gyroSensor = sensorManager.getDefaultSensor(Sensor.TYPE_GYROSCOPE);
+            }
+            updateRotation();
         } catch (Throwable e) {
             showStartupError(e);
         }
@@ -104,11 +140,24 @@ public class MainActivity extends Activity {
         super.onResume();
         hideSystemUi();
         if (gameView != null) gameView.onResume();
+        updateRotation();
+        if (sensorManager != null && gyroSensor != null) {
+            sensorManager.registerListener(gyroListener, gyroSensor, SensorManager.SENSOR_DELAY_GAME);
+        }
     }
 
     @Override
     protected void onPause() {
         super.onPause();
+        if (sensorManager != null) sensorManager.unregisterListener(gyroListener);
         if (gameView != null) gameView.onPause();
+    }
+
+    private void updateRotation() {
+        try {
+            screenRotation = getWindowManager().getDefaultDisplay().getRotation();
+        } catch (Throwable ignored) {
+            screenRotation = Surface.ROTATION_0;
+        }
     }
 }

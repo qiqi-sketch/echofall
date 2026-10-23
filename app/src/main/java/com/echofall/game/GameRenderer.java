@@ -14,6 +14,7 @@ import javax.microedition.khronos.opengles.GL10;
 public class GameRenderer implements GLSurfaceView.Renderer {
     private final GameState s;
     private long last;
+    private float aspect = 16f / 9f;
 
     private int program;
     private int aPos;
@@ -50,8 +51,6 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             "  gl_FragColor = vec4(c, uColor.a);\n" +
             "}\n";
 
-    // 简化着色器：部分老设备的 GPU 驱动对 varying / 精度比较挑剔，
-    // 光照版本链接失败时退回这个纯色版本，保证还能玩。
     private static final String FLAT_VS =
             "uniform mat4 uMvp;\n" +
             "attribute vec3 aPos;\n" +
@@ -74,22 +73,16 @@ public class GameRenderer implements GLSurfaceView.Renderer {
 
     private FloatBuffer makeCube() {
         float[] v = {
-                // -Z
                 -.5f, -.5f, -.5f, 0, 0, -1, .5f, -.5f, -.5f, 0, 0, -1, .5f, .5f, -.5f, 0, 0, -1,
                 -.5f, -.5f, -.5f, 0, 0, -1, .5f, .5f, -.5f, 0, 0, -1, -.5f, .5f, -.5f, 0, 0, -1,
-                // +Z
                 -.5f, -.5f, .5f, 0, 0, 1, -.5f, .5f, .5f, 0, 0, 1, .5f, .5f, .5f, 0, 0, 1,
                 -.5f, -.5f, .5f, 0, 0, 1, .5f, .5f, .5f, 0, 0, 1, .5f, -.5f, .5f, 0, 0, 1,
-                // -X
                 -.5f, -.5f, -.5f, -1, 0, 0, -.5f, .5f, -.5f, -1, 0, 0, -.5f, .5f, .5f, -1, 0, 0,
                 -.5f, -.5f, -.5f, -1, 0, 0, -.5f, .5f, .5f, -1, 0, 0, -.5f, -.5f, .5f, -1, 0, 0,
-                // +X
                 .5f, -.5f, -.5f, 1, 0, 0, .5f, -.5f, .5f, 1, 0, 0, .5f, .5f, .5f, 1, 0, 0,
                 .5f, -.5f, -.5f, 1, 0, 0, .5f, .5f, .5f, 1, 0, 0, .5f, .5f, -.5f, 1, 0, 0,
-                // -Y
                 -.5f, -.5f, -.5f, 0, -1, 0, -.5f, -.5f, .5f, 0, -1, 0, .5f, -.5f, .5f, 0, -1, 0,
                 -.5f, -.5f, -.5f, 0, -1, 0, .5f, -.5f, .5f, 0, -1, 0, .5f, -.5f, -.5f, 0, -1, 0,
-                // +Y
                 -.5f, .5f, -.5f, 0, 1, 0, .5f, .5f, -.5f, 0, 1, 0, .5f, .5f, .5f, 0, 1, 0,
                 -.5f, .5f, -.5f, 0, 1, 0, .5f, .5f, .5f, 0, 1, 0, -.5f, .5f, .5f, 0, 1, 0
         };
@@ -181,7 +174,7 @@ public class GameRenderer implements GLSurfaceView.Renderer {
             int w = Math.max(1, width);
             int h = Math.max(1, height);
             GLES20.glViewport(0, 0, w, h);
-            Matrix.perspectiveM(proj, 0, 70f, w / (float) h, 0.1f, 120f);
+            aspect = w / (float) h;
         } catch (Throwable e) {
             s.glError = "GL 尺寸设置失败: " + e;
             android.util.Log.e("Echofall", "onSurfaceChanged", e);
@@ -211,113 +204,210 @@ public class GameRenderer implements GLSurfaceView.Renderer {
         GLES20.glUseProgram(program);
         GLES20.glEnable(GLES20.GL_DEPTH_TEST);
         GLES20.glDisable(GLES20.GL_CULL_FACE);
+        GLES20.glEnable(GLES20.GL_BLEND);
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA);
 
-        float cp = (float) Math.cos(s.player.pitch);
-        float dx = (float) (Math.sin(s.player.yaw) * cp);
-        float dy = (float) Math.sin(s.player.pitch);
-        float dz = (float) (-Math.cos(s.player.yaw) * cp);
-        float ex = s.player.x;
-        float ey = s.player.y + 1.55f;
-        float ez = s.player.z;
+        Matrix.perspectiveM(proj, 0, s.fov(), aspect, 0.08f, 160f);
+
+        Player p = s.player;
+        float cp = (float) Math.cos(p.pitch);
+        float dx = (float) (Math.sin(p.yaw) * cp);
+        float dy = (float) Math.sin(p.pitch);
+        float dz = (float) (-Math.cos(p.yaw) * cp);
+        float ex = p.x;
+        float ey = p.y + p.eyeHeight();
+        float ez = p.z;
         Matrix.setLookAtM(view, 0, ex, ey, ez, ex + dx, ey + dy, ez + dz, 0f, 1f, 0f);
 
         // 地面
         box(view, MapGrid.W / 2f, -0.05f, MapGrid.H / 2f, MapGrid.W, 0.1f, MapGrid.H,
-                0.29f, 0.30f, 0.32f);
+                0.28f, 0.29f, 0.31f, 1f);
+
+        // A / B 点地面标记
+        drawSiteMarkers();
 
         // 墙体
         for (int x = 0; x < MapGrid.W; x++) {
             for (int z = 0; z < MapGrid.H; z++) {
                 if (!s.map.wall[x][z]) continue;
                 if ((x + z) % 2 == 0) {
-                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.44f, 0.45f, 0.48f);
+                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.44f, 0.45f, 0.48f, 1f);
                 } else {
-                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.37f, 0.38f, 0.41f);
+                    box(view, x + 0.5f, 1.5f, z + 0.5f, 1f, 3f, 1f, 0.37f, 0.38f, 0.41f, 1f);
                 }
             }
         }
 
-        // BOT
+        // 炸弹
+        if (s.bombPlanted) {
+            box(view, s.bombX, 0.12f, s.bombZ, 0.55f, 0.24f, 0.42f, 0.16f, 0.16f, 0.18f, 1f);
+            float blink = (float) (Math.sin(s.time * 9f) > 0 ? 1f : 0.2f);
+            box(view, s.bombX, 0.30f, s.bombZ, 0.14f, 0.12f, 0.14f, blink, 0.12f, 0.08f, 1f);
+        }
+
+        // 角色
         for (Bot b : s.bots) {
             if (!b.alive) continue;
-            float flash = b.hitFlash > 0 ? 0.35f : 0f;
-            float br = 0.78f + flash;
-            float bg = 0.20f + flash;
-            float bb = 0.16f + flash * 0.5f;
-            box(view, b.x, 0.42f, b.z, 0.18f, 0.84f, 0.22f, 0.22f, 0.23f, 0.26f);
-            box(view, b.x + (float) Math.cos(b.yaw) * 0.14f, 0.42f, b.z + (float) Math.sin(b.yaw) * 0.14f,
-                    0.18f, 0.84f, 0.22f, 0.22f, 0.23f, 0.26f);
-            box(view, b.x, 1.10f, b.z, 0.52f, 0.95f, 0.40f, br, bg, bb);
-            box(view, b.x, 1.72f, b.z, 0.32f, 0.34f, 0.32f, br * 0.95f, bg * 1.1f, bb);
-            boxRot(view, b.x + (float) Math.sin(b.yaw) * 0.36f, 1.16f,
-                    b.z - (float) Math.cos(b.yaw) * 0.36f, b.yaw,
-                    0.10f, 0.10f, 0.52f, 0.15f, 0.15f, 0.17f);
+            drawActor(b);
+        }
+
+        // 弹道
+        for (Tracer t : s.tracers) {
+            float a = Math.min(1f, t.life / 0.13f);
+            beam(t.x0, t.y0, t.z0, t.x1, t.y1, t.z1, 0.032f, 1f, 0.94f, 0.66f, a);
         }
 
         drawViewModel();
     }
 
+    private void drawSiteMarkers() {
+        int[] a = MapGrid.SITE_A;
+        int[] b = MapGrid.SITE_B;
+        box(view, (a[0] + a[2] + 1) / 2f, 0.012f, (a[1] + a[3] + 1) / 2f,
+                a[2] - a[0] + 1, 0.02f, a[3] - a[1] + 1, 0.52f, 0.24f, 0.18f, 0.75f);
+        box(view, (b[0] + b[2] + 1) / 2f, 0.012f, (b[1] + b[3] + 1) / 2f,
+                b[2] - b[0] + 1, 0.02f, b[3] - b[1] + 1, 0.18f, 0.30f, 0.55f, 0.75f);
+    }
+
+    private void drawActor(Bot b) {
+        float flash = b.hitFlash > 0f ? 0.45f : 0f;
+        if (b.team == GameState.TEAM_CT) {
+            float r = 0.28f + flash;
+            float g = 0.48f + flash;
+            float bl = 0.86f + flash;
+            box(view, b.x, 0.42f, b.z, 0.55f, 0.84f, 0.40f, r * 0.55f, g * 0.55f, bl * 0.55f, 1f);
+            box(view, b.x, 1.10f, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
+            box(view, b.x, 1.62f, b.z, 0.30f, 0.30f, 0.30f, 0.86f, 0.72f, 0.62f, 1f);
+            box(view, b.x, 1.60f, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
+        } else {
+            float r = 0.80f + flash;
+            float g = 0.55f + flash;
+            float bl = 0.22f + flash;
+            box(view, b.x, 0.42f, b.z, 0.55f, 0.84f, 0.40f, 0.30f, 0.26f, 0.20f, 1f);
+            box(view, b.x, 1.10f, b.z, 0.52f, 0.60f, 0.36f, r, g, bl, 1f);
+            box(view, b.x, 1.62f, b.z, 0.30f, 0.30f, 0.30f, 0.88f, 0.74f, 0.63f, 1f);
+            box(view, b.x, 1.60f, b.z, 0.34f, 0.16f, 0.34f, r * 0.7f, g * 0.7f, bl * 0.7f, 1f);
+        }
+        // 枪
+        boxYaw(view, b.x + (float) Math.sin(b.aimYaw) * 0.36f, 1.16f,
+                b.z - (float) Math.cos(b.aimYaw) * 0.36f, b.aimYaw,
+                0.10f, 0.10f, 0.56f, 0.13f, 0.13f, 0.15f, 1f);
+    }
+
     private void drawViewModel() {
         Player p = s.player;
         if (p.hp <= 0) return;
+        if (p.adsT > 0.85f && p.current.scoped) return;
 
         GLES20.glClear(GLES20.GL_DEPTH_BUFFER_BIT);
 
         float drop = 0f;
-        if (p.switchT > 0) {
+        if (p.switchT > 0f) {
             float t = 1f - p.switchT / 0.35f;
             drop = (float) Math.sin(t * Math.PI) * 0.42f;
         }
         float bobY = (float) Math.sin(p.bob) * 0.008f;
         float bobX = (float) Math.cos(p.bob * 0.5f) * 0.010f;
+        float recoil = p.recoilT > 0f ? p.recoilT * 0.012f : 0f;
 
         Matrix.setIdentityM(vm, 0);
-        Matrix.translateM(vm, 0, 0.30f + bobX, -0.27f - drop + bobY, -0.55f);
+        if (p.adsT > 0.5f) {
+            Matrix.translateM(vm, 0, 0.0f, -0.12f, -0.42f);
+        } else {
+            Matrix.translateM(vm, 0, 0.30f + bobX, -0.27f - drop + bobY, -0.55f + recoil);
+        }
         Matrix.rotateM(vm, 0, -drop * 130f, 1f, 0f, 0f);
 
         WeaponType w = p.current;
         if (w == WeaponType.RIFLE) {
-            box(vm, 0f, 0f, -0.10f, 0.09f, 0.10f, 0.55f, 0.16f, 0.17f, 0.19f);
-            box(vm, 0f, 0.02f, -0.46f, 0.04f, 0.04f, 0.28f, 0.10f, 0.10f, 0.11f);
-            box(vm, 0f, -0.10f, -0.08f, 0.05f, 0.16f, 0.11f, 0.09f, 0.09f, 0.10f);
-            box(vm, 0f, -0.02f, 0.19f, 0.06f, 0.08f, 0.18f, 0.22f, 0.14f, 0.08f);
-            box(vm, 0f, 0.08f, -0.06f, 0.03f, 0.04f, 0.10f, 0.08f, 0.08f, 0.09f);
-            if (p.muzzleT > 0) {
-                box(vm, 0f, 0.02f, -0.63f, 0.14f, 0.14f, 0.10f, 1f, 0.85f, 0.35f);
-            }
+            box(vm, 0f, 0f, -0.10f, 0.09f, 0.10f, 0.55f, 0.16f, 0.17f, 0.19f, 1f);
+            box(vm, 0f, 0.02f, -0.46f, 0.04f, 0.04f, 0.30f, 0.10f, 0.10f, 0.11f, 1f);
+            box(vm, 0f, -0.10f, -0.02f, 0.06f, 0.20f, 0.12f, 0.10f, 0.10f, 0.11f, 1f);
+            box(vm, 0f, -0.02f, 0.19f, 0.06f, 0.08f, 0.18f, 0.24f, 0.15f, 0.08f, 1f);
+            box(vm, 0f, 0.08f, -0.06f, 0.05f, 0.05f, 0.16f, 0.08f, 0.08f, 0.09f, 1f);
+            muzzle(w, 0f, 0.02f, -0.64f);
+        } else if (w == WeaponType.SMG) {
+            box(vm, 0f, 0f, -0.08f, 0.10f, 0.11f, 0.38f, 0.15f, 0.15f, 0.17f, 1f);
+            box(vm, 0f, 0.01f, -0.30f, 0.05f, 0.05f, 0.18f, 0.09f, 0.09f, 0.10f, 1f);
+            box(vm, 0f, -0.13f, -0.04f, 0.05f, 0.20f, 0.09f, 0.09f, 0.09f, 0.10f, 1f);
+            box(vm, 0f, 0.06f, 0.14f, 0.06f, 0.06f, 0.16f, 0.30f, 0.30f, 0.32f, 1f);
+            muzzle(w, 0f, 0.01f, -0.40f);
+        } else if (w == WeaponType.SHOTGUN) {
+            box(vm, 0f, 0f, -0.14f, 0.10f, 0.10f, 0.62f, 0.20f, 0.14f, 0.10f, 1f);
+            box(vm, 0f, 0.05f, -0.50f, 0.09f, 0.09f, 0.34f, 0.13f, 0.13f, 0.14f, 1f);
+            box(vm, 0f, -0.02f, 0.06f, 0.12f, 0.12f, 0.24f, 0.22f, 0.15f, 0.10f, 1f);
+            box(vm, 0f, -0.04f, 0.20f, 0.08f, 0.10f, 0.30f, 0.26f, 0.18f, 0.10f, 1f);
+            muzzle(w, 0f, 0.05f, -0.68f);
+        } else if (w == WeaponType.AWP) {
+            box(vm, 0f, 0f, -0.18f, 0.09f, 0.10f, 0.78f, 0.22f, 0.30f, 0.20f, 1f);
+            box(vm, 0f, 0.03f, -0.62f, 0.045f, 0.045f, 0.42f, 0.10f, 0.10f, 0.11f, 1f);
+            box(vm, 0f, 0.12f, -0.18f, 0.10f, 0.10f, 0.36f, 0.11f, 0.11f, 0.13f, 1f);
+            box(vm, 0f, 0.12f, -0.36f, 0.13f, 0.13f, 0.05f, 0.08f, 0.10f, 0.14f, 1f);
+            box(vm, 0f, -0.14f, 0.02f, 0.06f, 0.18f, 0.12f, 0.09f, 0.09f, 0.10f, 1f);
+            box(vm, 0f, -0.03f, 0.28f, 0.07f, 0.10f, 0.34f, 0.19f, 0.24f, 0.17f, 1f);
+            muzzle(w, 0f, 0.03f, -0.84f);
+        } else if (w == WeaponType.DEAGLE) {
+            box(vm, 0f, 0.03f, -0.16f, 0.085f, 0.09f, 0.34f, 0.20f, 0.20f, 0.22f, 1f);
+            box(vm, 0f, -0.08f, 0.02f, 0.07f, 0.20f, 0.10f, 0.12f, 0.12f, 0.13f, 1f);
+            box(vm, 0f, 0.10f, -0.30f, 0.03f, 0.03f, 0.08f, 0.10f, 0.10f, 0.11f, 1f);
+            muzzle(w, 0f, 0.03f, -0.34f);
         } else if (w == WeaponType.PISTOL) {
-            box(vm, 0f, 0.02f, -0.12f, 0.07f, 0.07f, 0.24f, 0.14f, 0.15f, 0.17f);
-            box(vm, 0f, -0.09f, 0.00f, 0.06f, 0.16f, 0.08f, 0.10f, 0.10f, 0.11f);
-            if (p.muzzleT > 0) {
-                box(vm, 0f, 0.02f, -0.27f, 0.11f, 0.11f, 0.08f, 1f, 0.85f, 0.35f);
-            }
+            box(vm, 0f, 0.02f, -0.12f, 0.07f, 0.07f, 0.26f, 0.14f, 0.15f, 0.17f, 1f);
+            box(vm, 0f, -0.09f, 0.00f, 0.06f, 0.17f, 0.08f, 0.10f, 0.10f, 0.11f, 1f);
+            muzzle(w, 0f, 0.02f, -0.26f);
         } else {
-            float slash = p.knifeT > 0 ? (float) Math.sin(p.knifeT * Math.PI) : 0f;
+            float slash = p.knifeT > 0f ? (float) Math.sin(p.knifeT * Math.PI) : 0f;
             Matrix.rotateM(vm, 0, slash * 70f, 0f, 0f, 1f);
             Matrix.rotateM(vm, 0, -slash * 45f, 1f, 0f, 0f);
             Matrix.translateM(vm, 0, slash * 0.16f, slash * 0.05f, 0f);
-            box(vm, 0f, 0.01f, -0.22f, 0.03f, 0.012f, 0.34f, 0.78f, 0.80f, 0.84f);
-            box(vm, 0f, 0.00f, 0.00f, 0.045f, 0.055f, 0.12f, 0.20f, 0.14f, 0.09f);
+            box(vm, 0f, 0.01f, -0.24f, 0.035f, 0.014f, 0.36f, 0.78f, 0.80f, 0.84f, 1f);
+            box(vm, 0f, 0.00f, 0.00f, 0.05f, 0.06f, 0.12f, 0.20f, 0.14f, 0.09f, 1f);
+        }
+    }
+
+    private void muzzle(WeaponType w, float x, float y, float z) {
+        if (s.player.muzzleT > 0f) {
+            float k = 0.09f + w.recoil * 0.012f;
+            box(vm, x, y, z, k, k, 0.10f, 1f, 0.85f, 0.35f, 1f);
+            box(vm, x, y, z, k * 0.5f, k * 2.2f, 0.08f, 1f, 0.75f, 0.25f, 1f);
         }
     }
 
     private void box(float[] base, float x, float y, float z,
-                     float sx, float sy, float sz, float r, float g, float b) {
-        boxRot(base, x, y, z, 0f, sx, sy, sz, r, g, b);
+                     float sx, float sy, float sz, float r, float g, float b, float a) {
+        cube(base, x, y, z, 0f, 0f, sx, sy, sz, r, g, b, a);
     }
 
-    private void boxRot(float[] base, float x, float y, float z, float yaw,
-                        float sx, float sy, float sz, float r, float g, float b) {
+    private void boxYaw(float[] base, float x, float y, float z, float yaw,
+                        float sx, float sy, float sz, float r, float g, float b, float a) {
+        cube(base, x, y, z, (float) Math.toDegrees(yaw), 0f, sx, sy, sz, r, g, b, a);
+    }
+
+    private void beam(float x0, float y0, float z0, float x1, float y1, float z1,
+                      float width, float r, float g, float b, float a) {
+        float dx = x1 - x0;
+        float dy = y1 - y0;
+        float dz = z1 - z0;
+        float len = (float) Math.sqrt(dx * dx + dy * dy + dz * dz);
+        if (len < 0.08f) return;
+        float yaw = (float) Math.toDegrees(Math.atan2(dx, dz));
+        float pitch = (float) Math.toDegrees(Math.asin(Math.max(-1f, Math.min(1f, -dy / len))));
+        cube(view, (x0 + x1) / 2f, (y0 + y1) / 2f, (z0 + z1) / 2f,
+                yaw, pitch, width, width, len, r, g, b, a);
+    }
+
+    private void cube(float[] base, float x, float y, float z,
+                      float yawDeg, float pitchDeg,
+                      float sx, float sy, float sz, float r, float g, float b, float a) {
         Matrix.setIdentityM(model, 0);
         Matrix.translateM(model, 0, x, y, z);
-        if (yaw != 0f) {
-            Matrix.rotateM(model, 0, (float) Math.toDegrees(yaw), 0f, 1f, 0f);
-        }
+        if (yawDeg != 0f) Matrix.rotateM(model, 0, yawDeg, 0f, 1f, 0f);
+        if (pitchDeg != 0f) Matrix.rotateM(model, 0, pitchDeg, 1f, 0f, 0f);
         Matrix.scaleM(model, 0, sx, sy, sz);
         Matrix.multiplyMM(tmp, 0, base, 0, model, 0);
         Matrix.multiplyMM(mvp, 0, proj, 0, tmp, 0);
         GLES20.glUniformMatrix4fv(uMvp, 1, false, mvp, 0);
-        GLES20.glUniform4f(uColor, r, g, b, 1f);
+        GLES20.glUniform4f(uColor, r, g, b, a);
         GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 36);
     }
 }
