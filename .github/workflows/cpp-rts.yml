@@ -1,0 +1,83 @@
+name: Build C++ RTS
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'cpp-rts/**'
+      - '.github/workflows/cpp-rts.yml'
+  pull_request:
+    paths:
+      - 'cpp-rts/**'
+      - '.github/workflows/cpp-rts.yml'
+  workflow_dispatch:
+
+jobs:
+  linux-selftest:
+    name: Linux headless self-test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install SDL2 (desktop)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsdl2-dev cmake build-essential
+
+      - name: Configure & build
+        run: |
+          cmake -S cpp-rts -B cpp-rts/build -DCMAKE_BUILD_TYPE=Release
+          cmake --build cpp-rts/build -j"$(nproc)"
+
+      - name: Run headless self-test
+        run: ./cpp-rts/build/selftest
+
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Install SDK / NDK / CMake
+        run: |
+          SDKMANAGER=$(ls -1 "$ANDROID_HOME"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -n1)
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platforms;android-35" "build-tools;35.0.0" \
+            "platform-tools" "ndk;27.0.12077973" "cmake;3.22.1"
+
+      - name: Download SDL2 sources
+        run: |
+          mkdir -p cpp-rts/third_party
+          curl -sSL -o /tmp/SDL2.tar.gz \
+            https://github.com/libsdl-org/SDL/releases/download/release-2.30.9/SDL2-2.30.9.tar.gz
+          tar -xzf /tmp/SDL2.tar.gz -C cpp-rts/third_party
+          echo "SDL2_SOURCE_DIR=$PWD/cpp-rts/third_party/SDL2-2.30.9" >> "$GITHUB_ENV"
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('cpp-rts/android/**/*.gradle.kts', 'cpp-rts/android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - name: Build debug APK
+        working-directory: cpp-rts/android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: frontline-android-debug
+          path: cpp-rts/android/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error

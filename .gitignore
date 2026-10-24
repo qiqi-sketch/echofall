@@ -8,3 +8,5 @@ build.log
 .idea/
 *.iml
 .DS_Store
+cpp-rts/android/app/.cxx/
+cpp-rts/third_party/
